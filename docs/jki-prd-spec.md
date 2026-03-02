@@ -31,6 +31,7 @@
     *   `2`: 歧義/複數結果 (Ambiguous/List displayed)。
 *   **特殊參數**：
     *   `-` (Dash)：將 OTP 直接輸出至 stdout 而非剪貼簿（便於管道整合）。
+    *   `--list` (Flag)：強制列出所有匹配條目並標註行號，即便只有單一結果也不執行自動複製或輸出純 OTP。
     *   `--` (Double Dash)：終止選項解析，後續字串強轉為 Pattern，解決與 `-` 或 `--list` 的語義衝突。
 *   **標準流 (Streams)**：
     *   **stdout**：輸出 OTP 內容或條目列表。
