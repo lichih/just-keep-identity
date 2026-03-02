@@ -1,0 +1,16 @@
+# Just Keep Identity (jki) - Git Attributes Configuration
+
+# Ensure JSON files are encrypted using git-age as per PRD V19
+# These filters must be configured in your local git config:
+# git config filter.age.clean "git-age-clean"
+# git config filter.age.smudge "git-age-smudge"
+# git config filter.age.textconv "git-age-textconv"
+
+vault.json  filter=age
+config.json filter=age
+
+# Ensure consistent line endings
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text
+*.sh text eol=lf

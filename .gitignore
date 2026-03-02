@@ -1,0 +1,20 @@
+# Rust
+/target
+Cargo.lock
+
+# Binary Cache (as per PRD V19)
+*.bin.age
+
+# Sensitive Data (Git age will handle encryption, but local JSONs should be protected)
+# config.json
+# vault.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

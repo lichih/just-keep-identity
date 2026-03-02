@@ -1,0 +1,10 @@
+[package]
+name = "jki"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jki-core = { path = "../jki-core" }
+clap = { version = "4.4", features = ["derive"] }
+copypasta = "0.10" # for clipboard
+notify-rust = "4" # for system notifications
