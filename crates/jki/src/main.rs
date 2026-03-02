@@ -32,13 +32,9 @@ fn main() {
         args.patterns.retain(|x| x != "-");
     }
 
-    if std::path::Path::new("data/private").exists() && std::env::var("JKI_HOME").is_err() {
-        std::env::set_var("JKI_METADATA_PATH", "data/private/vault.metadata.json");
-        std::env::set_var("JKI_SECRETS_PATH", "data/private/vault.secrets.json.age");
-    }
-
     let meta_path = JkiPath::metadata_path();
     let sec_path = JkiPath::secrets_path();
+
 
     if !meta_path.exists() {
         if !args.quiet { eprintln!("Error: Metadata not found at {:?}", meta_path); }

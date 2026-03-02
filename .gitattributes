@@ -6,7 +6,8 @@
 # git config filter.age.smudge "git-age-smudge"
 # git config filter.age.textconv "git-age-textconv"
 
-vault.json  filter=age
+vault.metadata.json filter=age
+vault.secrets.bin.age binary
 config.json filter=age
 
 # Ensure consistent line endings

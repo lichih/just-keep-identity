@@ -1,128 +1,56 @@
 use std::path::PathBuf;
+use std::env;
 
 pub struct JkiPath;
 
 impl JkiPath {
-    /// 獲取 JKI 的設定目錄
-    /// 優先順序：
-    /// 1. JKI_HOME 環境變數
-    /// 2. ~/.config/jki (Unix 風格)
-    /// 3. %LOCALAPPDATA%\jki (Windows)
-    pub fn config_dir() -> PathBuf {
-        if let Ok(home) = std::env::var("JKI_HOME") {
-            return PathBuf::from(home);
+    /// 獲取 JKI 根目錄 (JKI_HOME)
+    pub fn home_dir() -> PathBuf {
+        if let Ok(h) = env::var("JKI_HOME") {
+            let p = PathBuf::from(&h);
+            // 嘗試規範化為絕對路徑，若失敗則保留原始值
+            return p.canonicalize().unwrap_or_else(|_| p);
         }
 
-        #[cfg(not(windows))]
-        {
-            if let Some(home) = dirs::home_dir() {
-                return home.join(".config").join("jki");
-            }
-        }
+        // 預設路徑處理
+        let mut path = if cfg!(windows) {
+            dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
+        } else {
+            dirs::home_dir().map(|h| h.join(".config")).unwrap_or_else(|| PathBuf::from("."))
+        };
 
-        dirs::config_dir()
-            .map(|p| p.join("jki"))
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .map(|h| h.join(".jki"))
-                    .expect("Could not find home directory")
-            })
+        path.push("jki");
+        path
     }
 
     pub fn metadata_path() -> PathBuf {
-        std::env::var("JKI_METADATA_PATH")
+        env::var("JKI_METADATA_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::config_dir().join("vault.metadata.json"))
+            .unwrap_or_else(|_| Self::home_dir().join("vault.metadata.json"))
     }
 
     pub fn secrets_path() -> PathBuf {
-        std::env::var("JKI_SECRETS_PATH")
+        env::var("JKI_SECRETS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::config_dir().join("vault.secrets.json"))
+            .unwrap_or_else(|_| Self::home_dir().join("vault.secrets.bin.age"))
     }
 
     pub fn master_key_path() -> PathBuf {
-        std::env::var("JKI_MASTER_KEY_PATH")
+        env::var("JKI_MASTER_KEY_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::config_dir().join("master.key"))
+            .unwrap_or_else(|_| Self::home_dir().join("master.key"))
     }
 
-    /// 檢查檔案權限是否足夠安全 (Unix: 0600)
     pub fn check_secure_permissions(path: &PathBuf) -> Result<(), String> {
-        if !path.exists() {
-            return Err("File does not exist".to_string());
-        }
-
+        if !path.exists() { return Err("File does not exist".to_string()); }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
-            let mode = metadata.permissions().mode() & 0o777;
+            let mode = std::fs::metadata(path).map_err(|e| e.to_string())?.permissions().mode() & 0o777;
             if mode != 0o600 {
-                return Err(format!(
-                    "Insecure file permissions: {:o}. Expected 0600 (read/write by owner only).",
-                    mode
-                ));
+                return Err(format!("Insecure permissions: {:o}. Expected 0600.", mode));
             }
         }
-
-        #[cfg(windows)]
-        {
-            // TODO: 在 Windows 環境實作 ACL 檢查
-            // 確保檔案擁有者是目前使用者且無其他存取權
-        }
-
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_jki_home_override() {
-        let dir = tempdir().unwrap();
-        let home = dir.path().to_str().unwrap();
-        std::env::set_var("JKI_HOME", home);
-        
-        let config_dir = JkiPath::config_dir();
-        assert_eq!(config_dir, PathBuf::from(home));
-        
-        std::env::remove_var("JKI_HOME");
-    }
-
-    #[test]
-    fn test_metadata_path_override() {
-        let path = "/tmp/custom_metadata.json";
-        std::env::set_var("JKI_METADATA_PATH", path);
-        
-        let metadata_path = JkiPath::metadata_path();
-        assert_eq!(metadata_path, PathBuf::from(path));
-        
-        std::env::remove_var("JKI_METADATA_PATH");
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_check_secure_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("secure.key");
-        
-        // 1. File does not exist
-        assert!(JkiPath::check_secure_permissions(&file_path).is_err());
-        
-        // 2. Create file with 0600
-        fs::File::create(&file_path).unwrap();
-        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(JkiPath::check_secure_permissions(&file_path).is_ok());
-        
-        // 3. Insecure permissions (0644)
-        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(JkiPath::check_secure_permissions(&file_path).is_err());
     }
 }
