@@ -28,7 +28,7 @@ def search_accounts(accounts, patterns):
 
 def main():
     # Load data
-    vault_path = "vault.json"
+    vault_path = "data/private/vault.json"
     if not os.path.exists(vault_path):
         print(f"Error: {vault_path} not found. Run import script first.", file=sys.stderr)
         sys.exit(100)

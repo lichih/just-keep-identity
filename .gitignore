@@ -6,8 +6,8 @@ Cargo.lock
 *.bin.age
 
 # Sensitive Data (Git age will handle encryption, but local JSONs should be protected)
-# config.json
-# vault.json
+config.json
+vault.json
 
 # IDE
 .vscode/
@@ -18,4 +18,8 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
-\n# Private data\ndata/private/
+
+# Private data
+data/
+vault.json
+config.json

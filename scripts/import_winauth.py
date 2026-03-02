@@ -53,7 +53,7 @@ def parse_otpauth(uri):
 
 def main():
     txt_path = "data/private/winauth-2026-02-19.txt"
-    output_path = "vault.json"
+    output_path = "data/private/vault.json"
     
     if not os.path.exists(txt_path):
         print(f"Error: Text file not found at {txt_path}")
