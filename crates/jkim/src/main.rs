@@ -36,7 +36,11 @@ enum Commands {
     /// Check the health and status of the JKI system
     Status,
     /// Initialize the JKI home directory and Git repository
-    Init,
+    Init {
+        /// Force reset by deleting existing vault data
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Sync changes to Git (add, commit, pull --rebase, push)
     Sync,
     /// Edit metadata manually using your default editor
@@ -324,9 +328,21 @@ fn handle_edit() {
     }
 }
 
-fn handle_init() {
+fn handle_init(force: bool) {
     let config_dir = JkiPath::home_dir();
     println!("Initializing JKI Home at {:?}...", config_dir);
+
+    // 1. Force Reset Logic
+    if force {
+        println!("\n[Force Reset]");
+        let meta = JkiPath::metadata_path();
+        let sec = JkiPath::secrets_path();
+        if meta.exists() { let _ = fs::remove_file(&meta); println!("  - Metadata: Deleted."); }
+        if sec.exists() { let _ = fs::remove_file(&sec); println!("  - Secrets:  Deleted."); }
+    }
+
+    // 2. Directory Creation
+    print!("  - Directory: ");
     if !config_dir.exists() {
         #[cfg(unix)]
         {
@@ -337,17 +353,45 @@ fn handle_init() {
         {
             fs::create_dir_all(&config_dir).expect("Failed to create config directory");
         }
-        println!("  - Directory created.");
+        println!("Created.");
+    } else {
+        println!("Already exists. (Skipped)");
     }
+
+    // 3. Git Initialization
+    print!("  - Git Repo:  ");
     if !config_dir.join(".git").exists() {
-        let status = Command::new("git").args(["init", "-b", "main"]).current_dir(&config_dir).status().expect("Failed to git init");
-        if status.success() { println!("  - Git initialized."); }
+        let status = Command::new("git").args(["init", "-b", "main"]).current_dir(&config_dir).status();
+        match status {
+            Ok(s) if s.success() => println!("Initialized."),
+            _ => println!("FAILED to initialize."),
+        }
+    } else {
+        println!("Already initialized. (Skipped)");
     }
+
+    // 4. Config Files
+    print!("  - Config:    ");
     let gitignore_path = config_dir.join(".gitignore");
     fs::write(gitignore_path, "# JKI\nmaster.key\nvault.json\n*.txt\n*.bin\n").ok();
     let gitattrs_path = config_dir.join(".gitattributes");
     fs::write(gitattrs_path, "vault.secrets.bin.age binary\nvault.metadata.json filter=age\n").ok();
+    println!(".gitignore and .gitattributes written. (Updated)");
+
+    // 5. Data Conflict Detection
+    let meta_exists = JkiPath::metadata_path().exists();
+    let sec_exists = JkiPath::secrets_path().exists();
+    if meta_exists || sec_exists {
+        println!("\n[Data Warning]");
+        if sec_exists { println!("  - Existing vault data (vault.secrets.bin.age) detected."); }
+        println!("  - Subsequent imports will attempt to MERGE using your Master Key.");
+        println!("  - To start fresh, use 'jkim init --force' or delete vault.* manually.");
+    }
+
     println!("\nInitialization complete!");
+    println!("Next steps:");
+    println!("  - Run 'jkim status' to check health.");
+    println!("  - Run 'jkim import-winauth <file>' to add accounts.");
 }
 
 fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: bool, interactor: &dyn Interactor) {
@@ -435,7 +479,7 @@ fn main() {
 
     match &cli.command {
         Commands::Status => handle_status(),
-        Commands::Init => handle_init(),
+        Commands::Init { force } => handle_init(*force),
         Commands::Sync => handle_sync(),
         Commands::Edit => handle_edit(),
         Commands::MasterKey(m) => handle_master_key(m, cli.interactive, &interactor),
