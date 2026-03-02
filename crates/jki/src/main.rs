@@ -25,8 +25,7 @@ struct MetadataFile {
     version: u32,
 }
 
-fn main() {
-    let mut args = Args::parse();
+fn run(mut args: Args) -> Result<(), i32> {
     if args.patterns.contains(&"-".to_string()) {
         args.stdout = true;
         args.patterns.retain(|x| x != "-");
@@ -38,13 +37,13 @@ fn main() {
 
     if !meta_path.exists() {
         if !args.quiet { eprintln!("Error: Metadata not found at {:?}", meta_path); }
-        process::exit(100);
+        return Err(100);
     }
 
     if !args.quiet { eprintln!("Unlocking vault..."); }
     let master_key = acquire_master_key().unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
-        process::exit(101);
+        process::exit(101); // acquire_master_key uses raw terminal mode, exit might be okay if it restores it.
     });
 
     let meta_content = fs::read_to_string(&meta_path).expect("Failed to read metadata");
@@ -74,21 +73,21 @@ fn main() {
 
     if results.is_empty() {
         if !args.quiet { eprintln!("No matches found."); }
-        process::exit(1);
+        return Err(1);
     }
 
     let target = if results.len() == 1 && !args.list {
         Some(&results[0])
     } else if let Some(idx) = index_selection {
         if idx >= 1 && idx <= results.len() { Some(&results[idx - 1]) }
-        else { process::exit(2); }
+        else { return Err(2); }
     } else {
         if !args.quiet { eprintln!("{}:", if args.list { "Matches" } else { "Ambiguous results" }); }
         for (i, acc) in results.iter().enumerate() {
             let otp_str = if args.otp { format!("{} - ", generate_otp(acc).unwrap_or("ERROR".to_string())) } else { "".to_string() };
             println!("{:2}) {}{}{}", i + 1, otp_str, acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         }
-        process::exit(2);
+        return Err(2);
     };
 
     if let Some(acc) = target {
@@ -111,12 +110,25 @@ fn main() {
             }
         }
     }
+    Ok(())
+}
+
+fn main() {
+    let args = Args::parse();
+    if let Err(code) = run(args) {
+        process::exit(code);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+    use serial_test::serial;
+    use tempfile::tempdir;
+    use std::env;
+    use jki_core::{AccountType, encrypt_with_master_key};
+    use secrecy::SecretString;
 
     #[test]
     fn test_args_parsing() {
@@ -131,5 +143,63 @@ mod tests {
     fn test_args_stdout_short() {
         let args = Args::try_parse_from(["jki", "google", "-s"]).unwrap();
         assert!(args.stdout);
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn test_run_full_flow() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home");
+        fs::create_dir_all(&home).unwrap();
+        env::set_var("JKI_HOME", &home);
+
+        let master_key_val = "testpass";
+        let master_key = SecretString::from(master_key_val.to_string());
+        
+        // 1. Create master.key
+        let key_path = home.join("master.key");
+        fs::write(&key_path, master_key_val).unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // 2. Create Metadata
+        let acc_id = "test-id";
+        let metadata = MetadataFile {
+            version: 1,
+            accounts: vec![Account {
+                id: acc_id.to_string(),
+                name: "test@gmail.com".to_string(),
+                issuer: Some("Google".to_string()),
+                account_type: AccountType::Standard,
+                secret: "".to_string(),
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            }]
+        };
+        fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
+
+        // 3. Create Secrets
+        let mut secrets_map = HashMap::new();
+        secrets_map.insert(acc_id.to_string(), AccountSecret {
+            secret: "JBSWY3DPEHPK3PXP".to_string(),
+            digits: 6,
+            algorithm: "SHA1".to_string(),
+        });
+        let sec_json = serde_json::to_vec(&secrets_map).unwrap();
+        let encrypted = encrypt_with_master_key(&sec_json, &master_key).unwrap();
+        fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
+
+        // 4. Run jki
+        let args = Args {
+            patterns: vec!["google".to_string()],
+            list: false,
+            otp: false,
+            quiet: true,
+            stdout: true,
+        };
+        
+        let result = run(args);
+        assert!(result.is_ok());
     }
 }

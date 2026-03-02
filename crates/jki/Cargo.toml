@@ -11,3 +11,8 @@ serde_json = "1.0"
 copypasta = "0.10"
 notify-rust = "4"
 totp-rs = "5"
+secrecy = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"

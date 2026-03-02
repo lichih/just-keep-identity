@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 pub mod import;
 pub mod paths;
 
-#[derive(Archive, Deserialize, Serialize, SerdeDeserialize, SerdeSerialize, Debug, Clone)]
+#[derive(Archive, Deserialize, Serialize, SerdeDeserialize, SerdeSerialize, Debug, Clone, PartialEq)]
 #[archive(check_bytes)]
 pub struct Account {
     pub id: String,
