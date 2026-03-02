@@ -1,7 +1,7 @@
 use rkyv::{Archive, Deserialize, Serialize};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use secrecy::SecretString;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 pub mod import;
 pub mod paths;
@@ -124,21 +124,13 @@ pub fn search_accounts(accounts: &[Account], patterns: &[String]) -> Vec<Account
 
 // --- 金鑰獲取 ---
 
-pub fn acquire_master_key() -> Result<SecretString, String> {
-    use crate::paths::JkiPath;
+pub fn prompt_password(prompt: &str) -> Result<SecretString, String> {
     use crossterm::{
         event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
         terminal::{disable_raw_mode, enable_raw_mode},
         execute, cursor, style::Print,
     };
-
-    let key_path = JkiPath::master_key_path();
-    if key_path.exists() {
-        if JkiPath::check_secure_permissions(&key_path).is_ok() {
-            let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
-            return Ok(SecretString::from(content.trim().to_string()));
-        }
-    }
+    use std::io::{self, Write};
 
     if !atty::is(atty::Stream::Stdin) {
         let mut line = String::new();
@@ -147,9 +139,9 @@ pub fn acquire_master_key() -> Result<SecretString, String> {
     }
 
     enable_raw_mode().map_err(|e| e.to_string())?;
-    let mut stdout = io::stderr();
-    execute!(stdout, Print("Enter Master Key: [ "), cursor::SavePosition, Print("_ ]"), cursor::RestorePosition).ok();
-    stdout.flush().ok();
+    let mut stderr = io::stderr();
+    execute!(stderr, Print(format!("{}: [ ", prompt)), cursor::SavePosition, Print("_ ]"), cursor::RestorePosition).ok();
+    stderr.flush().ok();
 
     let mut password = String::new();
     let mut toggle = false;
@@ -158,11 +150,11 @@ pub fn acquire_master_key() -> Result<SecretString, String> {
         if let Ok(Event::Key(KeyEvent { code, modifiers, .. })) = event::read() {
             match code {
                 KeyCode::Enter => {
-                    execute!(stdout, cursor::RestorePosition, cursor::MoveRight(2), Print("\n")).ok();
+                    execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\n")).ok();
                     break Ok(SecretString::from(password));
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    execute!(stdout, cursor::RestorePosition, cursor::MoveRight(2), Print("\nCancelled\n")).ok();
+                    execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\nCancelled\n")).ok();
                     break Err("Interrupted".to_string());
                 }
                 KeyCode::Char(c) => { password.push(c); toggle = !toggle; }
@@ -170,12 +162,28 @@ pub fn acquire_master_key() -> Result<SecretString, String> {
                 _ => continue,
             }
             let symbol = if password.is_empty() { "_" } else if toggle { "*" } else { "x" };
-            execute!(stdout, cursor::RestorePosition, Print(symbol), cursor::RestorePosition).ok();
-            stdout.flush().ok();
+            execute!(stderr, cursor::RestorePosition, Print(symbol), cursor::RestorePosition).ok();
+            stderr.flush().ok();
         }
     };
     disable_raw_mode().ok();
     result
+}
+
+pub fn acquire_master_key(force_interactive: bool) -> Result<SecretString, String> {
+    use crate::paths::JkiPath;
+
+    if !force_interactive {
+        let key_path = JkiPath::master_key_path();
+        if key_path.exists() {
+            if JkiPath::check_secure_permissions(&key_path).is_ok() {
+                let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
+                return Ok(SecretString::from(content.trim().to_string()));
+            }
+        }
+    }
+
+    prompt_password("Enter Master Key")
 }
 
 pub mod agent {

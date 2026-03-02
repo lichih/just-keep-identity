@@ -17,8 +17,16 @@ JKI is a high-speed MFA vault in Rust. It is now in a stable **Standalone Mode**
 - Define the IPC protocol (likely Bincode or JSON over Unix Domain Sockets/Named Pipes).
 - Implement the "Ping" and "GetOTP" command placeholders.
 
-### Objective C: TUI Prototype (`jkim edit`) [DONE]
-- Use `ratatui` to implement a simple searchable list of accounts.
+### Objective C: Metadata Editor (`jkim edit`) [DONE]
+- Implement `jkim edit` following `crontab -e` pattern:
+    - Create a secure temporary file (`0600`, `.tmp.json`).
+    - Launch `$EDITOR`.
+    - Validate JSON schema before overwriting the original vault metadata.
+
+### Objective D: Master Key Management (`jkim master-key`) [DONE]
+- Implement `set`, `remove`, and `change` commands.
+- Support atomic re-encryption of the vault during `change`.
+- Support manual input of old key if `master.key` file is missing.
 
 ## 3. Reference Files
 - **Requirements**: `docs/jki-prd-spec.md` (V21).

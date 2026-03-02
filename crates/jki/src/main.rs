@@ -20,6 +20,10 @@ struct Cli {
     /// Search patterns (used if no subcommand is provided)
     pub patterns: Vec<String>,
 
+    /// Force interactive master key input, ignoring master.key file
+    #[arg(short = 'I', long)]
+    pub interactive: bool,
+
     #[arg(short, long)]
     pub list: bool,
     #[arg(short, long)]
@@ -121,7 +125,7 @@ fn run(cli: Cli) -> Result<(), i32> {
     }
 
     if !cli.quiet { eprintln!("Unlocking vault..."); }
-    let master_key = acquire_master_key().unwrap_or_else(|e| {
+    let master_key = acquire_master_key(cli.interactive).unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
         process::exit(101);
     });

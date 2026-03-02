@@ -5,34 +5,29 @@ use jki_core::{
     Account, 
     AccountSecret,
     acquire_master_key, 
+    prompt_password,
     encrypt_with_master_key,
     decrypt_with_master_key,
     import::parse_otpauth_uri
 };
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-
-use ratatui::{
-    backend::CrosstermBackend,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    layout::{Layout, Constraint, Direction},
-    style::{Style, Modifier, Color},
-    Terminal,
-};
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use std::env;
+use std::io::{Read, Write};
 
 #[derive(Parser)]
 #[command(name = "jkim", version, about = "JK Suite Management Hub")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Force interactive master key input, ignoring master.key file
+    #[arg(short = 'I', long, global = true)]
+    pub interactive: bool,
 }
 
 #[derive(Subcommand)]
@@ -43,8 +38,11 @@ enum Commands {
     Init,
     /// Sync changes to Git (add, commit, pull --rebase, push)
     Sync,
-    /// Edit accounts in a TUI
+    /// Edit metadata manually using your default editor
     Edit,
+    /// Manage the Master Key
+    #[command(subcommand)]
+    MasterKey(MasterKeyCommands),
     /// Import accounts from a WinAuth decrypted text file
     ImportWinauth {
         /// Path to the decrypted WinAuth .txt file
@@ -52,6 +50,28 @@ enum Commands {
         /// Overwrite existing accounts if name+issuer matches
         #[arg(short, long)]
         overwrite: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MasterKeyCommands {
+    /// Save a new master key to disk (0600)
+    Set {
+        /// Force overwrite without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Delete the master key from disk
+    Remove {
+        /// Force removal without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Re-encrypt the vault with a new master key
+    Change {
+        /// Automatically commit the change to Git
+        #[arg(long)]
+        commit: bool,
     },
 }
 
@@ -88,6 +108,124 @@ fn handle_status() {
     println!("\n[Paths]");
     println!("  - Metadata Path   : {:?}", JkiPath::metadata_path());
     println!("  - Secrets Path    : {:?}", JkiPath::secrets_path());
+}
+
+fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool) {
+    let key_path = JkiPath::master_key_path();
+    let sec_path = JkiPath::secrets_path();
+
+    match cmd {
+        MasterKeyCommands::Set { force } => {
+            if !*force && key_path.exists() {
+                println!("Warning: master.key already exists at {:?}", key_path);
+                print!("Overwrite? [y/N]: ");
+                std::io::stdout().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                if input.trim().to_lowercase() != "y" { return; }
+            }
+            if !*force && sec_path.exists() {
+                println!("CRITICAL WARNING: vault.secrets.bin.age already exists.");
+                println!("If the new key doesn't match the one used to encrypt it, you will LOSE ACCESS to your secrets.");
+                print!("Proceed anyway? [y/N]: ");
+                std::io::stdout().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                if input.trim().to_lowercase() != "y" { return; }
+            }
+
+            let p1 = prompt_password("Enter new Master Key").expect("Input failed");
+            let p2 = prompt_password("Confirm Master Key").expect("Input failed");
+            if p1.expose_secret() != p2.expose_secret() {
+                eprintln!("Error: Passwords do not match.");
+                return;
+            }
+
+            fs::write(&key_path, p1.expose_secret()).expect("Failed to write key");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            println!("Master Key saved to {:?}", key_path);
+        }
+        MasterKeyCommands::Remove { force } => {
+            if !key_path.exists() {
+                eprintln!("Error: master.key not found.");
+                return;
+            }
+            if !*force {
+                println!("Warning: Removing master.key means you will need to input it manually for every 'jki' command.");
+                print!("Are you sure? [y/N]: ");
+                std::io::stdout().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                if input.trim().to_lowercase() != "y" { return; }
+            }
+            fs::remove_file(&key_path).expect("Failed to remove key");
+            println!("Master Key removed.");
+        }
+        MasterKeyCommands::Change { commit } => {
+            // 1. Try to get current key to decrypt
+            let mut current_key = acquire_master_key(force_interactive).unwrap_or_else(|_| prompt_password("Enter current Master Key").expect("Input failed"));
+            
+            let mut secrets_data = None;
+            if sec_path.exists() {
+                let encrypted = fs::read(&sec_path).expect("Failed to read secrets");
+                match decrypt_with_master_key(&encrypted, &current_key) {
+                    Ok(d) => secrets_data = Some(d),
+                    Err(_) => {
+                        // If file-based key failed, try prompting once
+                        println!("Stored Master Key failed to decrypt vault.");
+                        current_key = prompt_password("Enter CORRECT current Master Key").expect("Input failed");
+                        secrets_data = Some(decrypt_with_master_key(&encrypted, &current_key).expect("Authentication failed"));
+                    }
+                }
+            } else {
+                println!("No existing vault found. This is equivalent to 'set'.");
+            }
+
+            // 2. Get new key
+            let p1 = prompt_password("Enter NEW Master Key").expect("Input failed");
+            let p2 = prompt_password("Confirm NEW Master Key").expect("Input failed");
+            if p1.expose_secret() != p2.expose_secret() {
+                eprintln!("Error: Passwords do not match.");
+                return;
+            }
+
+            // 3. Atomic Write
+            let key_tmp = key_path.with_extension("tmp");
+            let sec_tmp = sec_path.with_extension("tmp");
+
+            // Write new key
+            fs::write(&key_tmp, p1.expose_secret()).expect("Failed to write temp key");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&key_tmp, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+
+            // Write new vault (if exists)
+            if let Some(data) = secrets_data {
+                let encrypted = encrypt_with_master_key(&data, &p1).expect("Encryption failed");
+                fs::write(&sec_tmp, encrypted).expect("Failed to write temp secrets");
+            }
+
+            // Atomic rename
+            if sec_tmp.exists() { fs::rename(&sec_tmp, &sec_path).expect("Failed to replace secrets"); }
+            fs::rename(&key_tmp, &key_path).expect("Failed to replace key");
+
+            println!("Master Key changed successfully.");
+            if *commit {
+                let config_dir = JkiPath::home_dir();
+                git::add_all(&config_dir).ok();
+                git::commit(&config_dir, "jki: master key rotation").ok();
+                println!("Changes committed to Git.");
+            } else {
+                println!("Note: You may want to run 'jkim sync' to backup your new encrypted vault.");
+            }
+        }
+    }
 }
 
 fn handle_sync() {
@@ -132,6 +270,73 @@ fn handle_sync() {
     }
 }
 
+fn handle_edit() {
+    let meta_path = JkiPath::metadata_path();
+    if !meta_path.exists() {
+        eprintln!("Error: Metadata not found. Run 'jkim init' first.");
+        return;
+    }
+
+    // 1. Prepare temporary file with .tmp.json suffix for better syntax highlighting
+    let mut temp_file = tempfile::Builder::new()
+        .prefix("jki-metadata-")
+        .suffix(".tmp.json")
+        .tempfile()
+        .expect("Failed to create temporary file");
+
+    // 2. Set secure permissions on Unix (0600)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(temp_file.path()).unwrap().permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(temp_file.path(), perms).unwrap();
+    }
+
+    // 3. Copy content to temp file
+    let content = fs::read_to_string(&meta_path).expect("Failed to read metadata");
+    temp_file.write_all(content.as_bytes()).expect("Failed to write to temporary file");
+    temp_file.flush().expect("Failed to flush temporary file");
+
+    // 4. Launch editor
+    let editor = env::var("EDITOR").unwrap_or_else(|_| {
+        if cfg!(windows) { "notepad.exe".to_string() } else { "vi".to_string() }
+    });
+
+    println!("Opening metadata with {}...", editor);
+    let status = Command::new(&editor)
+        .arg(temp_file.path())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            // 5. Validate JSON after editing
+            let mut new_content = String::new();
+            temp_file.reopen().expect("Failed to reopen temp file")
+                .read_to_string(&mut new_content).expect("Failed to read back metadata from temp file");
+
+            match serde_json::from_str::<MetadataFile>(&new_content) {
+                Ok(_) => {
+                    // 6. Write back if valid
+                    fs::write(&meta_path, &new_content).expect("Failed to write back metadata");
+                    println!("Metadata updated and validated successfully.");
+                }
+                Err(e) => {
+                    eprintln!("\nERROR: Metadata contains JSON syntax errors: {}", e);
+                    eprintln!("The changes have NOT been applied.");
+                    eprintln!("Your edited content is preserved at: {:?}", temp_file.path());
+                    // Keep the temp file by persisting it (don't let it be deleted)
+                    let (file, path) = temp_file.keep().expect("Failed to preserve temp file");
+                    drop(file);
+                    drop(path);
+                }
+            }
+        }
+        Ok(s) => eprintln!("Editor exited with error: {}", s),
+        Err(e) => eprintln!("Failed to launch editor '{}': {}", editor, e),
+    }
+}
+
 fn handle_init() {
     let config_dir = JkiPath::home_dir();
     println!("Initializing JKI Home at {:?}...", config_dir);
@@ -158,7 +363,7 @@ fn handle_init() {
     println!("\nInitialization complete!");
 }
 
-fn handle_import_winauth(file: &PathBuf, overwrite: bool) {
+fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: bool) {
     if !file.exists() { eprintln!("Error: File not found."); return; }
 
     let meta_path = JkiPath::metadata_path();
@@ -166,7 +371,7 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool) {
 
     // 1. Acquire Master Key EARLIER (We need it to load existing secrets)
     println!("Please unlock your vault to perform import.");
-    let master_key = acquire_master_key().unwrap_or_else(|e| {
+    let master_key = acquire_master_key(force_interactive).unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
         std::process::exit(1);
     });
@@ -237,101 +442,6 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool) {
     println!("  - New: {}, Updated: {}, Skipped: {}", new_count, updated_count, skip_count);
 }
 
-fn filter_accounts<'a>(accounts: &'a [Account], query: &str) -> Vec<&'a Account> {
-    accounts.iter()
-        .filter(|acc| {
-            let target = format!("{} {}", acc.issuer.as_deref().unwrap_or_default(), acc.name).to_lowercase();
-            target.contains(&query.to_lowercase())
-        })
-        .collect()
-}
-
-fn handle_edit() {
-    let meta_path = JkiPath::metadata_path();
-    if !meta_path.exists() {
-        eprintln!("Error: Metadata not found. Run 'jkim init' or import accounts first.");
-        return;
-    }
-
-    let content = fs::read_to_string(&meta_path).expect("Failed to read metadata");
-    let metadata: MetadataFile = serde_json::from_str(&content).expect("Failed to parse metadata");
-
-    // TUI Setup
-    enable_raw_mode().unwrap();
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).unwrap();
-
-    let mut search_query = String::new();
-    let mut list_state = ListState::default();
-    list_state.select(Some(0));
-
-    loop {
-        let filtered_accounts = filter_accounts(&metadata.accounts, &search_query);
-
-        terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(f.size());
-
-            let search_box = Paragraph::new(search_query.as_str())
-                .block(Block::default().borders(Borders::ALL).title(" Search (Type to filter, ESC to exit) "));
-            f.render_widget(search_box, chunks[0]);
-
-            let items: Vec<ListItem> = filtered_accounts.iter()
-                .map(|acc| {
-                    let label = format!("{} - {}", acc.issuer.as_deref().unwrap_or("No Issuer"), acc.name);
-                    ListItem::new(label)
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Accounts "))
-                .highlight_style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))
-                .highlight_symbol("> ");
-            f.render_stateful_widget(list, chunks[1], &mut list_state);
-        }).unwrap();
-
-        if event::poll(std::time::Duration::from_millis(100)).unwrap() {
-            if let Event::Key(key) = event::read().unwrap() {
-                match key.code {
-                    KeyCode::Esc => break,
-                    KeyCode::Char(c) => {
-                        search_query.push(c);
-                        list_state.select(Some(0));
-                    }
-                    KeyCode::Backspace => {
-                        search_query.pop();
-                        list_state.select(Some(0));
-                    }
-                    KeyCode::Up => {
-                        let i = match list_state.selected() {
-                            Some(i) => if i == 0 { filtered_accounts.len().saturating_sub(1) } else { i - 1 },
-                            None => 0,
-                        };
-                        list_state.select(Some(i));
-                    }
-                    KeyCode::Down => {
-                        let i = match list_state.selected() {
-                            Some(i) => if i >= filtered_accounts.len().saturating_sub(1) { 0 } else { i + 1 },
-                            None => 0,
-                        };
-                        list_state.select(Some(i));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // TUI Cleanup
-    disable_raw_mode().unwrap();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture).unwrap();
-    terminal.show_cursor().unwrap();
-}
-
 fn main() {
     let cli = Cli::parse();
 
@@ -340,7 +450,8 @@ fn main() {
         Commands::Init => handle_init(),
         Commands::Sync => handle_sync(),
         Commands::Edit => handle_edit(),
-        Commands::ImportWinauth { file, overwrite } => handle_import_winauth(file, *overwrite),
+        Commands::MasterKey(m) => handle_master_key(m, cli.interactive),
+        Commands::ImportWinauth { file, overwrite } => handle_import_winauth(file, *overwrite, cli.interactive),
     }
 }
 
@@ -440,25 +551,5 @@ mod tests {
             .unwrap();
         let log = String::from_utf8_lossy(&output.stdout);
         assert!(log.contains("jki backup:"));
-    }
-
-    #[test]
-    fn test_filter_accounts() {
-        use jki_core::AccountType;
-        let accounts = vec![
-            Account { id: "1".to_string(), name: "John".to_string(), issuer: Some("Google".to_string()), account_type: AccountType::Standard, secret: "".to_string(), digits: 6, algorithm: "".to_string() },
-            Account { id: "2".to_string(), name: "Jane".to_string(), issuer: Some("Facebook".to_string()), account_type: AccountType::Standard, secret: "".to_string(), digits: 6, algorithm: "".to_string() },
-        ];
-
-        let filtered = filter_accounts(&accounts, "goog");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, "1");
-
-        let filtered = filter_accounts(&accounts, "John");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, "1");
-
-        let filtered = filter_accounts(&accounts, "xyz");
-        assert_eq!(filtered.len(), 0);
     }
 }
