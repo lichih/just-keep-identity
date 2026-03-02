@@ -6,6 +6,7 @@ pub mod import;
 #[derive(Archive, Deserialize, Serialize, SerdeDeserialize, SerdeSerialize, Debug, Clone)]
 #[archive(check_bytes)]
 pub struct Account {
+    pub id: String, // Unique ID for IPC and reference
     pub name: String,
     pub issuer: Option<String>,
     pub secret: String,

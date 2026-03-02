@@ -7,9 +7,8 @@
 # ]
 # ///
 import json
-import sys
 import os
-from typing import List, Optional
+from typing import List
 import pyotp
 import pyperclip
 import typer
@@ -31,12 +30,14 @@ def search_accounts(accounts, patterns):
         if all(fuzzy_match(p, target_str) for p in patterns):
             results.append(acc)
     return results
-
 @app.command()
 def main(
     patterns: List[str] = typer.Argument(None, help="Search patterns"),
     force_list: bool = typer.Option(False, "--list", help="Force listing results"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress stderr output"),
 ):
+    # ...
+
     # Load data
     vault_path = "data/private/vault.json"
     if not os.path.exists(vault_path):
@@ -101,14 +102,19 @@ def main(
     totp = pyotp.TOTP(target['secret'], digits=target.get('digits', 6))
     otp_code = totp.now()
 
+    # Show selection on stderr unless quiet
+    if not quiet:
+        issuer_label = f" ({target['issuer']})" if target.get('issuer') else ""
+        console.print(f"Selected: [bold cyan]{target['name']}{issuer_label}[/bold cyan]")
+
     if to_stdout:
         # Pure stdout output
         print(otp_code)
     else:
         pyperclip.copy(otp_code)
-        issuer_label = f" ({target['issuer']})" if target.get('issuer') else ""
-        console.print(f"Copied OTP for [bold cyan]{target['name']}{issuer_label}[/bold cyan]")
-    
+        if not quiet:
+            console.print("Copied OTP to clipboard")
+
     raise typer.Exit(code=0)
 
 if __name__ == "__main__":

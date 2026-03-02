@@ -3,11 +3,10 @@
 #   "urllib3",
 # ]
 # ///
-import zipfile
 import json
 import urllib.parse
-import sys
 import os
+import uuid
 
 def parse_otpauth(uri):
     if not uri.startswith("otpauth://"):
@@ -43,6 +42,7 @@ def parse_otpauth(uri):
         account_type = "Blizzard"
         
     return {
+        "id": str(uuid.uuid4()), # Generate unique ID for the entry
         "name": name,
         "issuer": issuer or issuer_query,
         "secret": secret,

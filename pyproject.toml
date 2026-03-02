@@ -8,3 +8,8 @@ dependencies = [
     "rich>=14.3.3",
     "typer>=0.24.1",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.4",
+]
