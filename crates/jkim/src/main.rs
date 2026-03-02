@@ -5,10 +5,11 @@ use jki_core::{
     Account, 
     AccountSecret,
     acquire_master_key, 
-    prompt_password,
     encrypt_with_master_key,
     decrypt_with_master_key,
-    import::parse_otpauth_uri
+    import::parse_otpauth_uri,
+    Interactor,
+    TerminalInteractor,
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -110,32 +111,23 @@ fn handle_status() {
     println!("  - Secrets Path    : {:?}", JkiPath::secrets_path());
 }
 
-fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool) {
+fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool, interactor: &dyn Interactor) {
     let key_path = JkiPath::master_key_path();
     let sec_path = JkiPath::secrets_path();
 
     match cmd {
         MasterKeyCommands::Set { force } => {
             if !*force && key_path.exists() {
-                println!("Warning: master.key already exists at {:?}", key_path);
-                print!("Overwrite? [y/N]: ");
-                std::io::stdout().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                if input.trim().to_lowercase() != "y" { return; }
+                if !interactor.confirm(&format!("Warning: master.key already exists at {:?}", key_path)) { return; }
             }
             if !*force && sec_path.exists() {
                 println!("CRITICAL WARNING: vault.secrets.bin.age already exists.");
                 println!("If the new key doesn't match the one used to encrypt it, you will LOSE ACCESS to your secrets.");
-                print!("Proceed anyway? [y/N]: ");
-                std::io::stdout().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                if input.trim().to_lowercase() != "y" { return; }
+                if !interactor.confirm("Proceed anyway?") { return; }
             }
 
-            let p1 = prompt_password("Enter new Master Key").expect("Input failed");
-            let p2 = prompt_password("Confirm Master Key").expect("Input failed");
+            let p1 = interactor.prompt_password("Enter new Master Key").expect("Input failed");
+            let p2 = interactor.prompt_password("Confirm Master Key").expect("Input failed");
             if p1.expose_secret() != p2.expose_secret() {
                 eprintln!("Error: Passwords do not match.");
                 return;
@@ -155,19 +147,14 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool) {
                 return;
             }
             if !*force {
-                println!("Warning: Removing master.key means you will need to input it manually for every 'jki' command.");
-                print!("Are you sure? [y/N]: ");
-                std::io::stdout().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                if input.trim().to_lowercase() != "y" { return; }
+                if !interactor.confirm("Warning: Removing master.key means you will need to input it manually for every 'jki' command. Are you sure?") { return; }
             }
             fs::remove_file(&key_path).expect("Failed to remove key");
             println!("Master Key removed.");
         }
         MasterKeyCommands::Change { commit } => {
             // 1. Try to get current key to decrypt
-            let mut current_key = acquire_master_key(force_interactive).unwrap_or_else(|_| prompt_password("Enter current Master Key").expect("Input failed"));
+            let mut current_key = acquire_master_key(force_interactive, interactor).unwrap_or_else(|_| interactor.prompt_password("Enter current Master Key").expect("Input failed"));
             
             let mut secrets_data = None;
             if sec_path.exists() {
@@ -177,7 +164,7 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool) {
                     Err(_) => {
                         // If file-based key failed, try prompting once
                         println!("Stored Master Key failed to decrypt vault.");
-                        current_key = prompt_password("Enter CORRECT current Master Key").expect("Input failed");
+                        current_key = interactor.prompt_password("Enter CORRECT current Master Key").expect("Input failed");
                         secrets_data = Some(decrypt_with_master_key(&encrypted, &current_key).expect("Authentication failed"));
                     }
                 }
@@ -186,8 +173,8 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool) {
             }
 
             // 2. Get new key
-            let p1 = prompt_password("Enter NEW Master Key").expect("Input failed");
-            let p2 = prompt_password("Confirm NEW Master Key").expect("Input failed");
+            let p1 = interactor.prompt_password("Enter NEW Master Key").expect("Input failed");
+            let p2 = interactor.prompt_password("Confirm NEW Master Key").expect("Input failed");
             if p1.expose_secret() != p2.expose_secret() {
                 eprintln!("Error: Passwords do not match.");
                 return;
@@ -363,7 +350,7 @@ fn handle_init() {
     println!("\nInitialization complete!");
 }
 
-fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: bool) {
+fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: bool, interactor: &dyn Interactor) {
     if !file.exists() { eprintln!("Error: File not found."); return; }
 
     let meta_path = JkiPath::metadata_path();
@@ -371,7 +358,7 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: boo
 
     // 1. Acquire Master Key EARLIER (We need it to load existing secrets)
     println!("Please unlock your vault to perform import.");
-    let master_key = acquire_master_key(force_interactive).unwrap_or_else(|e| {
+    let master_key = acquire_master_key(force_interactive, interactor).unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
         std::process::exit(1);
     });
@@ -444,14 +431,15 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: boo
 
 fn main() {
     let cli = Cli::parse();
+    let interactor = TerminalInteractor;
 
     match &cli.command {
         Commands::Status => handle_status(),
         Commands::Init => handle_init(),
         Commands::Sync => handle_sync(),
         Commands::Edit => handle_edit(),
-        Commands::MasterKey(m) => handle_master_key(m, cli.interactive),
-        Commands::ImportWinauth { file, overwrite } => handle_import_winauth(file, *overwrite, cli.interactive),
+        Commands::MasterKey(m) => handle_master_key(m, cli.interactive, &interactor),
+        Commands::ImportWinauth { file, overwrite } => handle_import_winauth(file, *overwrite, cli.interactive, &interactor),
     }
 }
 
@@ -461,6 +449,85 @@ mod tests {
     use serial_test::serial;
     use tempfile::tempdir;
     use std::env;
+    use jki_core::MockInteractor;
+    use std::cell::RefCell;
+
+    #[test]
+    #[serial]
+    fn test_handle_master_key_set() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_set");
+        env::set_var("JKI_HOME", &home);
+        fs::create_dir_all(&home).unwrap();
+
+        let cmd = MasterKeyCommands::Set { force: false };
+        let interactor = MockInteractor {
+            passwords: RefCell::new(vec!["newpass".to_string(), "newpass".to_string()]),
+            confirms: RefCell::new(vec![]),
+        };
+        handle_master_key(&cmd, false, &interactor);
+
+        assert!(home.join("master.key").exists());
+        assert_eq!(fs::read_to_string(home.join("master.key")).unwrap(), "newpass");
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_master_key_change_rotation() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_rotation");
+        env::set_var("JKI_HOME", &home);
+        fs::create_dir_all(&home).unwrap();
+
+        // 1. Setup initial state
+        let old_pass = "oldpass";
+        let key_path = home.join("master.key");
+        fs::write(&key_path, old_pass).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        
+        let secret_data = b"my secret";
+        let encrypted = encrypt_with_master_key(secret_data, &secrecy::SecretString::from(old_pass.to_string())).unwrap();
+        fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
+
+        // 2. Change key
+        let cmd = MasterKeyCommands::Change { commit: false };
+        let interactor = MockInteractor {
+            passwords: RefCell::new(vec!["newpass".to_string(), "newpass".to_string()]),
+            confirms: RefCell::new(vec![]),
+        };
+        handle_master_key(&cmd, false, &interactor);
+
+        // 3. Verify
+        assert_eq!(fs::read_to_string(home.join("master.key")).unwrap(), "newpass");
+        
+        let new_encrypted = fs::read(home.join("vault.secrets.bin.age")).unwrap();
+        let decrypted = decrypt_with_master_key(&new_encrypted, &secrecy::SecretString::from("newpass".to_string())).unwrap();
+        assert_eq!(decrypted, secret_data);
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_master_key_remove() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_remove");
+        env::set_var("JKI_HOME", &home);
+        fs::create_dir_all(&home).unwrap();
+
+        fs::write(home.join("master.key"), "todelete").unwrap();
+        
+        let cmd = MasterKeyCommands::Remove { force: true };
+        let interactor = MockInteractor {
+            passwords: RefCell::new(vec![]),
+            confirms: RefCell::new(vec![]),
+        };
+        handle_master_key(&cmd, false, &interactor);
+
+        assert!(!home.join("master.key").exists());
+    }
 
     #[test]
     #[serial]
@@ -513,7 +580,11 @@ mod tests {
         fs::write(&import_file, "otpauth://totp/Google:test@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google\n").unwrap();
 
         // 3. Run import
-        handle_import_winauth(&import_file, false);
+        let interactor = MockInteractor {
+            passwords: RefCell::new(vec![]),
+            confirms: RefCell::new(vec![]),
+        };
+        handle_import_winauth(&import_file, false, false, &interactor);
 
         // 4. Verify files
         let meta_path = home.join("vault.metadata.json");

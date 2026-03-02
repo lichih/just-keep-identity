@@ -3,6 +3,7 @@ use jki_core::{
     agent::{Request, Response},
     generate_otp, integrate_accounts, paths::JkiPath,
     Account, AccountSecret, acquire_master_key, decrypt_with_master_key, search_accounts,
+    TerminalInteractor, Interactor
 };
 use interprocess::local_socket::LocalSocketStream;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -125,7 +126,8 @@ fn run(cli: Cli) -> Result<(), i32> {
     }
 
     if !cli.quiet { eprintln!("Unlocking vault..."); }
-    let master_key = acquire_master_key(cli.interactive).unwrap_or_else(|e| {
+    let interactor = TerminalInteractor;
+    let master_key = acquire_master_key(cli.interactive, &interactor).unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
         process::exit(101);
     });

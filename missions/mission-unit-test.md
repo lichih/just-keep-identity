@@ -1,46 +1,47 @@
 # Mission: Just Keep Identity (jki) Unit Testing - Phase 3 (Automation & Agency)
 
 ## 1. Context Update
-Phase 3 has introduced:
+Phase 3 has successfully implemented:
 - **Git Automation**: `jkim sync` for automated vault synchronization.
-- **Agent Service**: `jki-agent` as a background service with an IPC protocol (JSON over Local Sockets).
-- **TUI Management**: `jkim edit` for an interactive, searchable account list using `ratatui`.
-- **Integrated CLI**: `jki` now supports an `agent` subcommand for IPC interaction.
+- **Agent Service**: `jki-agent` foundation with an IPC protocol (JSON over Local Sockets).
+- **Metadata Management**: `jkim edit` using the `$EDITOR` with post-edit JSON validation.
+- **Master Key Tools**: `jkim master-key [set|remove|change]` with atomic rotation and safety checks.
+- **Interaction Control**: Global `-I/--interactive` and `--force` flags for precise auth and automation control.
 
 ## 2. Objective
-Extend coverage to the new automation logic and agent-based workflows, maintaining a workspace-wide coverage of >80%.
+Extend coverage to the new management logic and automation workflows, focusing on atomicity and error boundary conditions. Maintain >80% workspace-wide coverage.
 
 ## 3. Key Logic to Test
-### jki-core (Sync & IPC)
+### jki-core (Common Foundation)
+- **Enhanced Key Acquisition**: 
+    - Test `acquire_master_key(force_interactive)` behavior (file bypass logic).
+    - Test `prompt_password` with mocked Stdin (using `tests/common` helper if needed).
 - **Git Utilities**: 
-    - Test `git::add_all`, `git::commit`, `git::pull_rebase`, and `git::push` (mocking the git command if possible, or using temp repos).
-    - Ensure `GitRepoStatus` correctly identifies clean vs. modified states.
-- **Agent IPC**:
-    - Verify `agent::Request` and `agent::Response` serialization/deserialization.
+    - Verify `git::add_all`, `git::commit`, `git::pull_rebase`, and `git::push` behavior in temporary repositories.
 
-### jki-agent (Service Logic)
-- **Request Handling**:
-    - Test `handle_client` logic (mocking the `LocalSocketStream` if possible, or using an actual socket in a temporary directory).
-    - Ensure `Ping` and `GetOTP` (placeholder) return the expected responses.
+### jkim (Management Hub)
+- **Master Key Lifecycle**:
+    - Test `set` and `remove` with and without the `--force` flag.
+    - **Rotation Atomicity**: Mock `master-key change` to ensure both `master.key` and `vault.secrets.bin.age` are updated together, and verify behavior when the old key input is wrong.
+- **Editor Integration**:
+    - Extract JSON validation logic from `handle_edit` to ensure it correctly catches malformed metadata before saving.
+- **Sync Flow**:
+    - Verify `handle_sync` handles uninitialized repositories and missing remotes gracefully.
 
-### jkim (Automation & TUI)
-- **Sync Command**:
-    - Verify `handle_sync` performs the correct sequence of Git operations.
-    - Test edge cases where Git is not initialized or a remote is missing.
-- **TUI Filter Logic**:
-    - Extract the filtering logic from `handle_edit` to a testable function to ensure search/filtering works correctly without needing a full terminal environment.
+### jki (Subcommand & Auth)
+- **Interaction Flags**: Ensure the `-I` flag correctly triggers the interactive prompt even when a valid `master.key` file exists.
+- **Agent Dispatcher**: Test `handle_agent` error handling when the socket is missing or the agent returns an error response.
 
-### jki (Subcommand Dispatch)
-- **Agent Client**:
-    - Test `handle_agent` by mocking the agent response (using a local socket in a temp directory).
+### jki-agent (Service)
+- **IPC Protocol**: Verify that the agent correctly parses `Request` and produces valid `Response` JSON over the byte stream.
 
 ## 4. Technical Requirements
-- **Async Testing**: Since `jki-agent` and IPC might eventually move to async (Tokio), be prepared to use `#[tokio::test]`.
-- **Interprocess Simulation**: Use `JkiPath::agent_socket_path()` overrides to test IPC without affecting the user's running agent.
-- **Concurrency**: Continue using `serial_test` for any tests that modify environment variables or global states (like `JKI_HOME`).
+- **Integration Mocking**: Use `tempfile` and `JKI_HOME` environment overrides for all file-destructive tests.
+- **Mocking Stdin/Stdout**: Use techniques like `std::io::Cursor` or pipe redirection in integration tests to simulate user input for passwords and confirmations.
+- **Concurrency**: Stick to `serial_test` for any logic involving global environment variables or file locks.
 
 ## 5. Handover Note
-Current coverage is healthy (~80%). Focus on covering the new `git` module in `jki-core` and the IPC dispatcher in `jki`.
+Workspace coverage is healthy (~80%). Priority should be given to integration tests for the `master-key change` command, as it is the most critical path for data integrity.
 
 ---
-*Updated by Gemini-CLI for Phase 3 Unit Test Mission.*
+*Updated by Gemini-CLI for Phase 3 Completion.*
