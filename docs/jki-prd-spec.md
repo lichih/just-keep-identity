@@ -65,3 +65,19 @@
 *   **jki 啟動延遲**：< 3ms (Cold start)。
 *   **IPC 延遲**：< 1ms。
 *   **Agent 內存佔用**：< 10MB。
+
+### ---
+
+**第五章：安全性硬化 (Security Hardening)**
+
+#### **5.1 IPC 准入控制 (Access Control)**
+*   **身份校驗**：Agent 必須校驗連線進程的 **UID (User ID)**。拒絕非目前使用者的任何請求。
+*   **路徑白名單**：(進階) Agent 應檢查呼叫者的 PID 路徑，確保其為受信任的 `jki` 或 `jkim` 二進位檔。
+
+#### **5.2 記憶體防護 (In-Memory Security)**
+*   **防交換 (Anti-Swap)**：使用 `mlock` 或相關 Rust crate (`memlock`) 鎖定敏感記憶體分頁。
+*   **自動抹除 (Zeroize)**：敏感數據（如 Master Key）在記憶體中必須實作 `Drop` trait 以執行零值化抹除。
+
+#### **5.3 數據最小化輸出**
+*   **無密鑰傳輸**：Agent 嚴禁透過 IPC 輸出 Master Key 或 Data Key。
+*   **按需計算**：IPC 協議僅支援「傳入 Pattern -> 傳回 OTP 及其剩餘秒數」的閉環操作。

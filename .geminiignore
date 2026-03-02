@@ -1,0 +1,3 @@
+# Allow Gemini to see the decrypted data for development/importing
+!data/private/
+!data/private/*.txt
