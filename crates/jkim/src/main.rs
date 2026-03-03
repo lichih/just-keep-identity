@@ -216,7 +216,16 @@ fn handle_status() {
         Err(_) => println!("  - System Keychain : Not found"),
     }
     
-    println!("  - jki-agent       : Not checked (IPC placeholder)");
+    let agent_status = if jki_core::agent::AgentClient::ping() {
+        if jki_core::agent::AgentClient::get_master_key().is_ok() {
+            "Running (Unlocked)"
+        } else {
+            "Running (Locked)"
+        }
+    } else {
+        "Not running"
+    };
+    println!("  - jki-agent       : {}", agent_status);
 
     println!("\n[Data & Synchronization]");
     let config_dir = JkiPath::home_dir();
@@ -360,6 +369,7 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool, default_f
             }
 
             println!("Master Key changed successfully.");
+            let _ = jki_core::agent::AgentClient::unlock(&p1);
             if *commit {
                 let config_dir = JkiPath::home_dir();
                 git::add_all(&config_dir).ok();
@@ -456,6 +466,7 @@ fn handle_sync(default_flag: bool, interactor: &dyn Interactor) {
             return;
         }
         println!("Sync completed successfully!");
+        let _ = jki_core::agent::AgentClient::reload();
     } else {
         println!("No remote configured. Local backup complete.");
     }
@@ -511,6 +522,7 @@ fn handle_edit() {
                     // 6. Write back if valid
                     fs::write(&meta_path, &new_content).expect("Failed to write back metadata");
                     println!("Metadata updated and validated successfully.");
+                    let _ = jki_core::agent::AgentClient::reload();
                 }
                 Err(e) => {
                     eprintln!("\nERROR: Metadata contains JSON syntax errors: {}", e);
@@ -791,6 +803,7 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: boo
 
     println!("\nImport completed successfully!");
     println!("  - New: {}, Updated: {}, Skipped: {}", new_count, updated_count, skip_count);
+    let _ = jki_core::agent::AgentClient::reload();
 }
 
 fn main() {

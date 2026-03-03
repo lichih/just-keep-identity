@@ -333,7 +333,7 @@ pub fn ensure_agent_running(quiet: bool) -> bool {
 
 pub mod agent {
     use serde::{Deserialize, Serialize};
-    use std::io::{Read, Write, BufReader, BufRead};
+    use std::io::{Write, BufReader, BufRead};
     use interprocess::local_socket::LocalSocketStream;
     use crate::paths::JkiPath;
     use secrecy::{SecretString, ExposeSecret};

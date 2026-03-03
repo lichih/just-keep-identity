@@ -200,6 +200,19 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>) -> io:
                     Err(e) => Response::Error(format!("GetOTP failed: {}", e)),
                 }
             }
+            Request::GetMasterKey => {
+                use secrecy::ExposeSecret;
+                let s = state.lock().unwrap();
+                match &s.master_key {
+                    Some(key) => Response::MasterKey(key.expose_secret().clone()),
+                    None => Response::Error("Agent is locked".to_string()),
+                }
+            }
+            Request::Reload => {
+                let mut s = state.lock().unwrap();
+                s.secrets = None;
+                Response::Success
+            }
         };
 
         let resp_json = serde_json::to_string(&resp).unwrap();
@@ -342,6 +355,60 @@ mod tests {
         match resp {
             Response::Error(msg) => assert!(msg.contains("Invalid request")),
             _ => panic!("Expected Error response, got {:?}", resp),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_client_reload() {
+        let state = Arc::new(Mutex::new(State::new(false)));
+        {
+            let mut s = state.lock().unwrap();
+            s.secrets = Some(HashMap::new()); // Set as unlocked
+        }
+        
+        let req = Request::Reload;
+        let mut input_data = serde_json::to_vec(&req).unwrap();
+        input_data.push(b'\n');
+        
+        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+        handle_client_io(&mut stream, state.clone()).unwrap();
+
+        let resp_str = String::from_utf8(stream.output).unwrap();
+        let resp: Response = serde_json::from_str(&resp_str).unwrap();
+        match resp {
+            Response::Success => {},
+            _ => panic!("Expected Success, got {:?}", resp),
+        }
+        
+        // Verify secrets cleared but master_key persists if it was there
+        let s = state.lock().unwrap();
+        assert!(s.secrets.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_client_get_master_key() {
+        use secrecy::SecretString;
+        let state = Arc::new(Mutex::new(State::new(false)));
+        let key = "secret-pass";
+        {
+            let mut s = state.lock().unwrap();
+            s.master_key = Some(SecretString::from(key.to_string()));
+        }
+        
+        let req = Request::GetMasterKey;
+        let mut input_data = serde_json::to_vec(&req).unwrap();
+        input_data.push(b'\n');
+        
+        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+        handle_client_io(&mut stream, state).unwrap();
+
+        let resp_str = String::from_utf8(stream.output).unwrap();
+        let resp: Response = serde_json::from_str(&resp_str).unwrap();
+        match resp {
+            Response::MasterKey(k) => assert_eq!(k, key),
+            _ => panic!("Expected MasterKey, got {:?}", resp),
         }
     }
 
