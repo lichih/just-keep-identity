@@ -1,3 +1,6 @@
+# Load macOS signing variables if the file exists
+-include .env.macos
+
 .PHONY: all release install clean dev test-all cov help bundle bundle-app bundle-icon
 
 # Directories
@@ -75,7 +78,6 @@ sign: bundle
 ## notarize: Notarize the macOS app bundle
 notarize: sign
 	./scripts/notarize_macos.sh "$(APP_BUNDLE)" "$(APPLE_ID)" "$(TEAM_ID)" "$(AC_PASSWORD)"
-
 ## clean: Remove build artifacts
 clean:
 	cargo clean

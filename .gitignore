@@ -25,7 +25,12 @@ Thumbs.db
 .venv/
 __pycache__/
 
+# Environment & Credentials
+.env
+.env.*
+
 # Private data
 data/
 vault.json
 config.json
+private/
