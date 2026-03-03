@@ -105,6 +105,12 @@ fn main() -> io::Result<()> {
     let socket_path = JkiPath::agent_socket_path();
     let name = socket_path.to_str().unwrap();
 
+    // Pre-flight check
+    if force_age && !JkiPath::secrets_path().exists() {
+        eprintln!("CRITICAL: Force-age mode enabled but encrypted vault (.age) is missing. Exit.");
+        std::process::exit(1);
+    }
+
     // Remove existing socket file if it exists (for Unix)
     if socket_path.exists() && !cfg!(windows) {
         let _ = std::fs::remove_file(&socket_path);
