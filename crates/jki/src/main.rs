@@ -105,7 +105,7 @@ fn handle_agent_with_stream<S: Read + Write>(cmd: &AgentCommands, mut stream: S)
 
     match resp {
         Response::Pong => println!("Agent is alive (Pong)"),
-        Response::Unlocked => println!("Agent unlocked successfully"),
+        Response::Unlocked(source) => println!("Agent unlocked successfully using {}", source),
         Response::OTP(otp) => println!("{}", otp),
         Response::Error(e) => return Err(format!("Agent error: {}", e)),
     }
@@ -126,7 +126,21 @@ fn ensure_agent_running(quiet: bool) -> bool {
     if !quiet { eprintln!("Starting jki-agent..."); }
     
     let current_exe = std::env::current_exe().expect("Failed to get current exe");
-    let agent_exe = current_exe.parent().unwrap().join("jki-agent");
+    let mut agent_exe = current_exe.parent().unwrap().join("jki-agent");
+    
+    // Handle cargo test/run where binaries might be in the parent directory of 'deps'
+    if !agent_exe.exists() {
+        if let Some(parent) = current_exe.parent() {
+            if parent.ends_with("deps") {
+                if let Some(grandparent) = parent.parent() {
+                    let alt_agent_exe = grandparent.join("jki-agent");
+                    if alt_agent_exe.exists() {
+                        agent_exe = alt_agent_exe;
+                    }
+                }
+            }
+        }
+    }
     
     let child = process::Command::new(agent_exe)
         .stdin(process::Stdio::null())
@@ -243,7 +257,8 @@ fn run(cli: Cli) -> Result<(), i32> {
         }
 
         // 2. Agent Path: Connect to jki-agent
-        if ensure_agent_running(cli.quiet) {
+        let agent_reachable = ensure_agent_running(cli.quiet);
+        if agent_reachable {
             let socket_path = JkiPath::agent_socket_path();
             if let Ok(mut stream) = LocalSocketStream::connect(socket_path.to_str().unwrap()) {
                 let req = Request::GetOTP { account_id: acc.id.clone() };
@@ -273,23 +288,32 @@ fn run(cli: Cli) -> Result<(), i32> {
                                     let mut line = String::new();
                                     let mut reader = BufReader::new(s);
                                     if let Ok(_) = reader.read_line(&mut line) {
-                                        if let Ok(Response::Unlocked) = serde_json::from_str(&line) {
-                                            let req = Request::GetOTP { account_id: acc.id.clone() };
-                                            let mut s = reader.into_inner();
-                                            let _ = s.write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes());
-                                            let _ = s.flush();
-                                            
-                                            let mut line = String::new();
-                                            let mut reader = BufReader::new(s);
-                                            if let Ok(_) = reader.read_line(&mut line) {
-                                                if let Ok(Response::OTP(otp)) = serde_json::from_str(&line) {
-                                                    handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
-                                                    return Ok(());
+                                        match serde_json::from_str::<Response>(&line) {
+                                            Ok(Response::Unlocked(_)) => {
+                                                let req = Request::GetOTP { account_id: acc.id.clone() };
+                                                let mut s = reader.into_inner();
+                                                let _ = s.write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes());
+                                                let _ = s.flush();
+                                                
+                                                let mut line = String::new();
+                                                let mut reader = BufReader::new(s);
+                                                if let Ok(_) = reader.read_line(&mut line) {
+                                                    if let Ok(Response::OTP(otp)) = serde_json::from_str(&line) {
+                                                        handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
+                                                        return Ok(());
+                                                    }
                                                 }
                                             }
+                                            Ok(Response::Error(e)) => {
+                                                if !cli.quiet { eprintln!("Error: Agent failed to unlock: {}", e); }
+                                            }
+                                            _ => {}
                                         }
                                     }
                                 }
+                            }
+                            Response::Error(e) => {
+                                if !cli.quiet { eprintln!("Error: Agent failed: {}", e); }
                             }
                             _ => {}
                         }
@@ -298,16 +322,31 @@ fn run(cli: Cli) -> Result<(), i32> {
             }
         }
 
+        // If force_agent is set and we reached here, it means Agent path failed
+        if cli.force_agent {
+            if !cli.quiet { eprintln!("Error: Agent path failed and --force-agent is enabled. Bailing out."); }
+            return Err(1);
+        }
+
         // 3 & 4. Static Key Path & Interactive Path (Fallback)
         if !cli.quiet { eprintln!("Falling back to local decryption..."); }
         let sec_path = JkiPath::secrets_path();
         let interactor = TerminalInteractor;
+        
+        if !sec_path.exists() {
+            eprintln!("Error: Secrets file missing at {:?}. Please run jkim init or restore from backup.", sec_path);
+            return Err(1);
+        }
+
         let master_key = acquire_master_key(cli.interactive, &interactor, Some(&KeyringStore)).unwrap_or_else(|e| {
             eprintln!("Authentication failed: {}", e);
             process::exit(101);
         });
 
-        let sec_encrypted = fs::read(&sec_path).expect("Secrets file missing");
+        let sec_encrypted = fs::read(&sec_path).map_err(|e| {
+            eprintln!("Error: Failed to read secrets file: {}", e);
+            1
+        })?;
         let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).expect("Decryption failed");
         let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).expect("Secrets parse error");
 

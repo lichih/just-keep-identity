@@ -38,19 +38,28 @@ impl State {
         }
     }
 
-    fn unlock(&mut self, master_key: secrecy::SecretString) -> Result<(), String> {
+    fn unlock(&mut self, master_key: secrecy::SecretString) -> Result<String, String> {
         let sec_path = JkiPath::secrets_path();
-        if !sec_path.exists() {
-            return Err("Secrets file missing".to_string());
+        let decrypted_path = JkiPath::decrypted_secrets_path();
+
+        if sec_path.exists() {
+            let sec_encrypted = std::fs::read(&sec_path).map_err(|e| e.to_string())?;
+            let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key)?;
+            let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
+
+            self.secrets = Some(secrets_map);
+            self.last_unlocked = Some(Instant::now());
+            Ok("Encrypted Vault".to_string())
+        } else if decrypted_path.exists() {
+            let sec_json = std::fs::read(&decrypted_path).map_err(|e| e.to_string())?;
+            let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
+
+            self.secrets = Some(secrets_map);
+            self.last_unlocked = Some(Instant::now());
+            Ok("Plaintext Vault".to_string())
+        } else {
+            Err("Secrets file missing (neither .age nor .json found)".to_string())
         }
-
-        let sec_encrypted = std::fs::read(&sec_path).map_err(|e| e.to_string())?;
-        let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key)?;
-        let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
-
-        self.secrets = Some(secrets_map);
-        self.last_unlocked = Some(Instant::now());
-        Ok(())
     }
 
     fn get_otp(&mut self, account_id: &str) -> Result<String, String> {
@@ -140,7 +149,7 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>) -> io:
             Request::Unlock { master_key } => {
                 let mut s = state.lock().unwrap();
                 match s.unlock(master_key.into()) {
-                    Ok(_) => Response::Unlocked,
+                    Ok(source) => Response::Unlocked(source),
                     Err(e) => Response::Error(format!("Unlock failed: {}", e)),
                 }
             }
@@ -261,7 +270,9 @@ mod tests {
 
         // First response: Unlocked
         match resps.next().unwrap() {
-            Response::Unlocked => {},
+            Response::Unlocked(source) => {
+                assert!(source.contains("Vault"));
+            },
             resp => panic!("Expected Unlocked, got {:?}", resp),
         }
 

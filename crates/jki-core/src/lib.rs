@@ -287,7 +287,7 @@ pub mod agent {
     #[derive(Serialize, Deserialize, Debug)]
     pub enum Response {
         Pong,
-        Unlocked,
+        Unlocked(String),
         OTP(String),
         Error(String),
     }

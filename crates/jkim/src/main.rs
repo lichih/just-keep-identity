@@ -981,7 +981,8 @@ mod tests {
         fs::write(home.join("test.txt"), "content").unwrap();
         
         // 3. Sync (should commit)
-        handle_sync();
+        let interactor = MockInteractor { passwords: std::cell::RefCell::new(vec![]), confirms: std::cell::RefCell::new(vec![]) };
+        handle_sync(false, &interactor);
         
         // 4. Verify commit
         let output = Command::new("git")
