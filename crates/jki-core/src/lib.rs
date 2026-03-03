@@ -158,14 +158,13 @@ impl Interactor for TerminalInteractor {
             if let Ok(Event::Key(KeyEvent { code, modifiers, .. })) = event::read() {
                 match code {
                     KeyCode::Enter => {
-                        execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\n")).ok();
+                        execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\r\n")).ok();
                         break Ok(SecretString::from(password));
                     }
                     KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                        execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\nCancelled\n")).ok();
+                        execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\r\nCancelled\r\n")).ok();
                         break Err("Interrupted".to_string());
-                    }
-                    KeyCode::Char(c) => { password.push(c); toggle = !toggle; }
+                    }                    KeyCode::Char(c) => { password.push(c); toggle = !toggle; }
                     KeyCode::Backspace => { if !password.is_empty() { password.pop(); toggle = !toggle; } }
                     _ => continue,
                 }
@@ -231,12 +230,14 @@ pub mod agent {
     #[derive(Serialize, Deserialize, Debug)]
     pub enum Request {
         Ping,
+        Unlock { master_key: String },
         GetOTP { account_id: String },
     }
 
     #[derive(Serialize, Deserialize, Debug)]
     pub enum Response {
         Pong,
+        Unlocked,
         OTP(String),
         Error(String),
     }

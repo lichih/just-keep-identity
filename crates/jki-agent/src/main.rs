@@ -1,7 +1,77 @@
 use interprocess::local_socket::LocalSocketListener;
-use jki_core::{agent::{Request, Response}, paths::JkiPath};
+use jki_core::{
+    agent::{Request, Response},
+    paths::JkiPath,
+    decrypt_with_master_key,
+    AccountSecret,
+    generate_otp,
+    Account,
+    AccountType,
+};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::thread;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+struct State {
+    secrets: Option<HashMap<String, AccountSecret>>,
+    last_unlocked: Option<Instant>,
+    ttl: Duration,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            secrets: None,
+            last_unlocked: None,
+            ttl: Duration::from_secs(3600), // 1 hour TTL
+        }
+    }
+
+    fn check_ttl(&mut self) {
+        if let Some(last) = self.last_unlocked {
+            if last.elapsed() > self.ttl {
+                self.secrets = None;
+                self.last_unlocked = None;
+            }
+        }
+    }
+
+    fn unlock(&mut self, master_key: secrecy::SecretString) -> Result<(), String> {
+        let sec_path = JkiPath::secrets_path();
+        if !sec_path.exists() {
+            return Err("Secrets file missing".to_string());
+        }
+
+        let sec_encrypted = std::fs::read(&sec_path).map_err(|e| e.to_string())?;
+        let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key)?;
+        let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
+
+        self.secrets = Some(secrets_map);
+        self.last_unlocked = Some(Instant::now());
+        Ok(())
+    }
+
+    fn get_otp(&mut self, account_id: &str) -> Result<String, String> {
+        self.check_ttl();
+        let secrets = self.secrets.as_ref().ok_or("Agent is locked")?;
+        let secret = secrets.get(account_id).ok_or("Account not found")?;
+        
+        // Construct a temporary Account object for generate_otp
+        let acc = Account {
+            id: account_id.to_string(),
+            name: "".to_string(), // Not needed for OTP
+            issuer: None,
+            account_type: AccountType::Standard,
+            secret: secret.secret.clone(),
+            digits: secret.digits,
+            algorithm: secret.algorithm.clone(),
+        };
+
+        generate_otp(&acc)
+    }
+}
 
 fn main() -> io::Result<()> {
     let socket_path = JkiPath::agent_socket_path();
@@ -15,11 +85,14 @@ fn main() -> io::Result<()> {
     let listener = LocalSocketListener::bind(name)?;
     println!("jki-agent listening on {:?}", socket_path);
 
+    let state = Arc::new(Mutex::new(State::new()));
+
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
+                let state = Arc::clone(&state);
                 thread::spawn(move || {
-                    if let Err(e) = handle_client(s) {
+                    if let Err(e) = handle_client(s, state) {
                         eprintln!("Error handling client: {}", e);
                     }
                 });
@@ -32,11 +105,11 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn handle_client(stream: interprocess::local_socket::LocalSocketStream) -> io::Result<()> {
-    handle_client_io(stream)
+fn handle_client(stream: interprocess::local_socket::LocalSocketStream, state: Arc<Mutex<State>>) -> io::Result<()> {
+    handle_client_io(stream, state)
 }
 
-fn handle_client_io<S: Read + Write>(stream: S) -> io::Result<()> {
+fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
 
@@ -55,28 +128,35 @@ fn handle_client_io<S: Read + Write>(stream: S) -> io::Result<()> {
             Ok(r) => r,
             Err(e) => {
                 let resp = Response::Error(format!("Invalid request: {}", e));
-                let mut s = reader.into_inner();
+                let s = reader.get_mut();
                 s.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())?;
                 s.flush()?;
-                reader = BufReader::new(s);
                 continue;
             }
         };
 
         let resp = match req {
             Request::Ping => Response::Pong,
+            Request::Unlock { master_key } => {
+                let mut s = state.lock().unwrap();
+                match s.unlock(master_key.into()) {
+                    Ok(_) => Response::Unlocked,
+                    Err(e) => Response::Error(format!("Unlock failed: {}", e)),
+                }
+            }
             Request::GetOTP { account_id } => {
-                Response::OTP(format!("OTP-for-{}", account_id))
+                let mut s = state.lock().unwrap();
+                match s.get_otp(&account_id) {
+                    Ok(otp) => Response::OTP(otp),
+                    Err(e) => Response::Error(format!("GetOTP failed: {}", e)),
+                }
             }
         };
 
         let resp_json = serde_json::to_string(&resp).unwrap();
-        let mut s = reader.into_inner();
+        let s = reader.get_mut();
         s.write_all(format!("{}\n", resp_json).as_bytes())?;
         s.flush()?;
-        
-        // Re-wrap for next iteration
-        reader = BufReader::new(s);
     }
     Ok(())
 }
@@ -100,12 +180,13 @@ mod tests {
 
     #[test]
     fn test_handle_client_ping() {
+        let state = Arc::new(Mutex::new(State::new()));
         let req = Request::Ping;
         let mut input_data = serde_json::to_vec(&req).unwrap();
         input_data.push(b'\n');
         
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream).unwrap();
+        handle_client_io(&mut stream, state).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
@@ -116,10 +197,90 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_client_get_otp_locked() {
+        let state = Arc::new(Mutex::new(State::new()));
+        let req = Request::GetOTP { account_id: "test".to_string() };
+        let mut input_data = serde_json::to_vec(&req).unwrap();
+        input_data.push(b'\n');
+        
+        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+        handle_client_io(&mut stream, state).unwrap();
+
+        let resp_str = String::from_utf8(stream.output).unwrap();
+        let resp: Response = serde_json::from_str(&resp_str).unwrap();
+        match resp {
+            Response::Error(msg) => assert!(msg.contains("Agent is locked")),
+            _ => panic!("Expected Error (locked), got {:?}", resp),
+        }
+    }
+
+    #[test]
+    fn test_handle_client_unlock_and_get_otp() {
+        use tempfile::tempdir;
+        use std::env;
+        use jki_core::encrypt_with_master_key;
+        use secrecy::SecretString;
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home");
+        std::fs::create_dir_all(&home).unwrap();
+        env::set_var("JKI_HOME", &home);
+
+        let master_key_val = "testpass";
+        let master_key = SecretString::from(master_key_val.to_string());
+        
+        // 1. Create Secrets
+        let acc_id = "test-id";
+        let mut secrets_map = HashMap::new();
+        secrets_map.insert(acc_id.to_string(), AccountSecret {
+            secret: "JBSWY3DPEHPK3PXP".to_string(),
+            digits: 6,
+            algorithm: "SHA1".to_string(),
+        });
+        let sec_json = serde_json::to_vec(&secrets_map).unwrap();
+        let encrypted = encrypt_with_master_key(&sec_json, &master_key).unwrap();
+        std::fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
+
+        let state = Arc::new(Mutex::new(State::new()));
+
+        // 2. Unlock Request
+        let unlock_req = Request::Unlock { master_key: master_key_val.to_string() };
+        let mut input_data = serde_json::to_vec(&unlock_req).unwrap();
+        input_data.push(b'\n');
+
+        // 3. GetOTP Request
+        let otp_req = Request::GetOTP { account_id: acc_id.to_string() };
+        input_data.extend(serde_json::to_vec(&otp_req).unwrap());
+        input_data.push(b'\n');
+
+        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+        handle_client_io(&mut stream, state).unwrap();
+
+        let resp_output = String::from_utf8(stream.output).unwrap();
+        let mut resps = resp_output.lines().map(|l| serde_json::from_str::<Response>(l).unwrap());
+
+        // First response: Unlocked
+        match resps.next().unwrap() {
+            Response::Unlocked => {},
+            resp => panic!("Expected Unlocked, got {:?}", resp),
+        }
+
+        // Second response: OTP
+        match resps.next().unwrap() {
+            Response::OTP(otp) => {
+                assert_eq!(otp.len(), 6);
+                assert!(otp.chars().all(|c| c.is_ascii_digit()));
+            }
+            resp => panic!("Expected OTP, got {:?}", resp),
+        }
+    }
+
+    #[test]
     fn test_handle_client_malformed_json() {
+        let state = Arc::new(Mutex::new(State::new()));
         let input_data = b"not a json\n";
         let mut stream = MockStream { input: Cursor::new(input_data.to_vec()), output: Vec::new() };
-        handle_client_io(&mut stream).unwrap();
+        handle_client_io(&mut stream, state).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();

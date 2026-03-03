@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use jki_core::{
     agent::{Request, Response},
-    generate_otp, integrate_accounts, paths::JkiPath,
+    generate_otp, paths::JkiPath,
     Account, AccountSecret, acquire_master_key, decrypt_with_master_key, search_accounts,
     TerminalInteractor
 };
@@ -48,6 +48,8 @@ enum Commands {
 enum AgentCommands {
     /// Check if the agent is alive
     Ping,
+    /// Unlock the agent with master key
+    Unlock,
     /// Get an OTP via the agent
     Get { id: String },
 }
@@ -79,6 +81,12 @@ fn handle_agent(cmd: &AgentCommands) {
 fn handle_agent_with_stream<S: Read + Write>(cmd: &AgentCommands, mut stream: S) -> Result<(), String> {
     let req = match cmd {
         AgentCommands::Ping => Request::Ping,
+        AgentCommands::Unlock => {
+            let interactor = TerminalInteractor;
+            let master_key = acquire_master_key(false, &interactor)?;
+            use secrecy::ExposeSecret;
+            Request::Unlock { master_key: master_key.expose_secret().clone() }
+        }
         AgentCommands::Get { id } => Request::GetOTP { account_id: id.clone() },
     };
 
@@ -93,10 +101,60 @@ fn handle_agent_with_stream<S: Read + Write>(cmd: &AgentCommands, mut stream: S)
 
     match resp {
         Response::Pong => println!("Agent is alive (Pong)"),
+        Response::Unlocked => println!("Agent unlocked successfully"),
         Response::OTP(otp) => println!("{}", otp),
         Response::Error(e) => return Err(format!("Agent error: {}", e)),
     }
     Ok(())
+}
+
+fn ensure_agent_running(quiet: bool) -> bool {
+    let socket_path = JkiPath::agent_socket_path();
+    if socket_path.exists() {
+        if let Ok(_) = LocalSocketStream::connect(socket_path.to_str().unwrap()) {
+            return true;
+        }
+        if !cfg!(windows) {
+            let _ = std::fs::remove_file(&socket_path);
+        }
+    }
+
+    if !quiet { eprintln!("Starting jki-agent..."); }
+    
+    let current_exe = std::env::current_exe().expect("Failed to get current exe");
+    let agent_exe = current_exe.parent().unwrap().join("jki-agent");
+    
+    let child = process::Command::new(agent_exe)
+        .stdin(process::Stdio::null())
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .spawn();
+
+    match child {
+        Ok(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            true
+        }
+        Err(e) => {
+            if !quiet { eprintln!("Failed to start jki-agent: {}", e); }
+            false
+        }
+    }
+}
+
+fn handle_otp_output(otp: String, label: String, stdout_flag: bool, quiet: bool) {
+    if !quiet { eprintln!("Selected: {}", label); }
+    if stdout_flag { println!("{}", otp); }
+    else {
+        use copypasta::{ClipboardContext, ClipboardProvider};
+        let mut ctx = ClipboardContext::new().expect("Failed to open clipboard");
+        ctx.set_contents(otp).expect("Failed to set clipboard content");
+        if !quiet {
+            eprintln!("Copied OTP to clipboard.");
+            use notify_rust::Notification;
+            let _ = Notification::new().summary("jki: OTP Copied").body(&format!("Account: {}", label)).show();
+        }
+    }
 }
 
 fn run(cli: Cli) -> Result<(), i32> {
@@ -118,36 +176,13 @@ fn run(cli: Cli) -> Result<(), i32> {
     }
 
     let meta_path = JkiPath::metadata_path();
-    let sec_path = JkiPath::secrets_path();
-
     if !meta_path.exists() {
         if !cli.quiet { eprintln!("Error: Metadata not found at {:?}", meta_path); }
         return Err(100);
     }
 
-    if !cli.quiet { eprintln!("Unlocking vault..."); }
-    let interactor = TerminalInteractor;
-    let master_key = acquire_master_key(cli.interactive, &interactor).unwrap_or_else(|e| {
-        eprintln!("Authentication failed: {}", e);
-        process::exit(101);
-    });
-
     let meta_content = fs::read_to_string(&meta_path).expect("Failed to read metadata");
     let meta_data: MetadataFile = serde_json::from_str(&meta_content).expect("Metadata parse error");
-
-    let sec_encrypted = fs::read(&sec_path).expect("Secrets file missing");
-    let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).expect("Decryption failed");
-    let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).expect("Secrets parse error");
-
-    let (integrated_accounts, missing_ids) = integrate_accounts(meta_data.accounts, &secrets_map);
-
-    if !missing_ids.is_empty() && !cli.quiet {
-        eprintln!("Data Consistency Warning: Some accounts are missing secrets.");
-        for name in &missing_ids { eprintln!("  - {}", name); }
-        eprintln!("(Run with -q to suppress this warning)\n");
-    }
-
-    let accounts = integrated_accounts;
 
     let mut search_terms = patterns;
     let mut index_selection: Option<usize> = None;
@@ -155,45 +190,114 @@ fn run(cli: Cli) -> Result<(), i32> {
         index_selection = search_terms.pop().and_then(|s| s.parse().ok());
     }
 
-    let results = if search_terms.is_empty() { accounts.clone() } else { search_accounts(&accounts, &search_terms) };
+    let initial_results = if search_terms.is_empty() {
+        meta_data.accounts.clone()
+    } else {
+        search_accounts(&meta_data.accounts, &search_terms)
+    };
 
-    if results.is_empty() {
+    if initial_results.is_empty() {
         if !cli.quiet { eprintln!("No matches found."); }
         return Err(1);
     }
 
-    let target = if results.len() == 1 && !cli.list {
-        Some(&results[0])
+    let target_acc = if initial_results.len() == 1 && !cli.list {
+        Some(&initial_results[0])
     } else if let Some(idx) = index_selection {
-        if idx >= 1 && idx <= results.len() { Some(&results[idx - 1]) }
+        if idx >= 1 && idx <= initial_results.len() { Some(&initial_results[idx - 1]) }
         else { return Err(2); }
     } else {
         if !cli.quiet { eprintln!("{}:", if cli.list { "Matches" } else { "Ambiguous results" }); }
-        for (i, acc) in results.iter().enumerate() {
-            let otp_str = if cli.otp { format!("{} - ", generate_otp(acc).unwrap_or("ERROR".to_string())) } else { "".to_string() };
-            println!("{:2}) {}{}{}", i + 1, otp_str, acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
+        for (i, acc) in initial_results.iter().enumerate() {
+            println!("{:2}) {}{}", i + 1, acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         }
         return Err(2);
     };
 
-    if let Some(acc) = target {
-        let otp = generate_otp(acc).unwrap_or_else(|e| {
-            eprintln!("OTP generation failed: {}", e);
-            process::exit(102);
-        });
+    if let Some(acc) = target_acc {
         let label = format!("{}{}", acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         
-        if !cli.quiet { eprintln!("Selected: {}", label); }
-        if stdout_flag { println!("{}", otp); }
-        else {
-            use copypasta::{ClipboardContext, ClipboardProvider};
-            let mut ctx = ClipboardContext::new().expect("Failed to open clipboard");
-            ctx.set_contents(otp).expect("Failed to set clipboard content");
-            if !cli.quiet {
-                eprintln!("Copied OTP to clipboard.");
-                use notify_rust::Notification;
-                let _ = Notification::new().summary("jki: OTP Copied").body(&format!("Account: {}", label)).show();
+        if ensure_agent_running(cli.quiet) {
+            let socket_path = JkiPath::agent_socket_path();
+            if let Ok(mut stream) = LocalSocketStream::connect(socket_path.to_str().unwrap()) {
+                let req = Request::GetOTP { account_id: acc.id.clone() };
+                let req_json = serde_json::to_string(&req).unwrap();
+                let _ = stream.write_all(format!("{}\n", req_json).as_bytes());
+                let _ = stream.flush();
+
+                let mut line = String::new();
+                let mut reader = BufReader::new(stream);
+                if let Ok(_) = reader.read_line(&mut line) {
+                    if let Ok(resp) = serde_json::from_str::<Response>(&line) {
+                        match resp {
+                            Response::OTP(otp) => {
+                                handle_otp_output(otp, label, stdout_flag, cli.quiet);
+                                return Ok(());
+                            }
+                            Response::Error(e) if e.contains("Agent is locked") => {
+                                if !cli.quiet { eprintln!("Agent is locked. Attempting to unlock..."); }
+                                let interactor = TerminalInteractor;
+                                if let Ok(master_key) = acquire_master_key(cli.interactive, &interactor) {
+                                    use secrecy::ExposeSecret;
+                                    let unlock_req = Request::Unlock { master_key: master_key.expose_secret().clone() };
+                                    let mut s = reader.into_inner();
+                                    let _ = s.write_all(format!("{}\n", serde_json::to_string(&unlock_req).unwrap()).as_bytes());
+                                    let _ = s.flush();
+                                    
+                                    let mut line = String::new();
+                                    let mut reader = BufReader::new(s);
+                                    if let Ok(_) = reader.read_line(&mut line) {
+                                        if let Ok(Response::Unlocked) = serde_json::from_str(&line) {
+                                            let req = Request::GetOTP { account_id: acc.id.clone() };
+                                            let mut s = reader.into_inner();
+                                            let _ = s.write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes());
+                                            let _ = s.flush();
+                                            
+                                            let mut line = String::new();
+                                            let mut reader = BufReader::new(s);
+                                            if let Ok(_) = reader.read_line(&mut line) {
+                                                if let Ok(Response::OTP(otp)) = serde_json::from_str(&line) {
+                                                    handle_otp_output(otp, label, stdout_flag, cli.quiet);
+                                                    return Ok(());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
+        }
+
+        if !cli.quiet { eprintln!("Falling back to local decryption..."); }
+        let sec_path = JkiPath::secrets_path();
+        let interactor = TerminalInteractor;
+        let master_key = acquire_master_key(cli.interactive, &interactor).unwrap_or_else(|e| {
+            eprintln!("Authentication failed: {}", e);
+            process::exit(101);
+        });
+
+        let sec_encrypted = fs::read(&sec_path).expect("Secrets file missing");
+        let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).expect("Decryption failed");
+        let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).expect("Secrets parse error");
+
+        if let Some(s) = secrets_map.get(&acc.id) {
+            let mut full_acc = acc.clone();
+            full_acc.secret = s.secret.clone();
+            full_acc.digits = s.digits;
+            full_acc.algorithm = s.algorithm.clone();
+            
+            let otp = generate_otp(&full_acc).unwrap_or_else(|e| {
+                eprintln!("OTP generation failed: {}", e);
+                process::exit(102);
+            });
+            handle_otp_output(otp, label, stdout_flag, cli.quiet);
+        } else {
+            eprintln!("Error: Secret not found for account {}", acc.id);
+            return Err(1);
         }
     }
     Ok(())
@@ -277,12 +381,10 @@ mod tests {
         let master_key_val = "testpass";
         let master_key = SecretString::from(master_key_val.to_string());
         
-        // 1. Create master.key
         let key_path = home.join("master.key");
         fs::write(&key_path, master_key_val).unwrap();
         fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
 
-        // 2. Create Metadata
         let acc_id = "test-id";
         let metadata = MetadataFile {
             version: 1,
@@ -298,7 +400,6 @@ mod tests {
         };
         fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
 
-        // 3. Create Secrets
         let mut secrets_map = HashMap::new();
         secrets_map.insert(acc_id.to_string(), AccountSecret {
             secret: "JBSWY3DPEHPK3PXP".to_string(),
@@ -309,7 +410,6 @@ mod tests {
         let encrypted = encrypt_with_master_key(&sec_json, &master_key).unwrap();
         fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
 
-        // 4. Run jki
         let cli = Cli {
             command: None,
             patterns: vec!["google".to_string()],

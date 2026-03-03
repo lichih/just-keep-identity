@@ -15,7 +15,7 @@ base32 = "0.4"
 uuid = { version = "1.0", features = ["v4"] }
 dirs = "5.0"
 zeroize = { version = "1.7", features = ["derive"] }
-secrecy = "0.8"
+secrecy = { version = "0.8", features = ["serde"] }
 rpassword = "7.3"
 atty = "0.2.14"
 crossterm = "0.29.0"
