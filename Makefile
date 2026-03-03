@@ -1,7 +1,7 @@
-.PHONY: all release install clean help
+.PHONY: all release install clean dev test-all help
 
 # Directories
-BIN_DIR = $(HOME)/bin
+BIN_DIR = $(HOME)/.local/bin
 TARGET_DIR = target/release
 
 # Binaries
@@ -13,16 +13,21 @@ all: help
 release:
 	cargo build --release --workspace
 
-## install: Build and deploy binaries to ~/bin/
-install: release
-	@mkdir -p $(BIN_DIR)
-	@for bin in $(BINS); do \
-		echo "Installing $$bin to $(BIN_DIR)..."; \
-		cp $(TARGET_DIR)/$$bin $(BIN_DIR)/; \
-	done
-	@echo ""
-	@echo "Installation complete! Binaries are in $(BIN_DIR)."
-	@echo "Ensure $(BIN_DIR) is in your PATH."
+## dev: Build debug binaries or run cargo watch (if installed)
+dev:
+	@if command -v cargo-watch >/dev/null; then \
+		cargo watch -x build; \
+	else \
+		cargo build; \
+	fi
+
+## test-all: Run all tests in the workspace
+test-all:
+	cargo test --workspace
+
+## install: Build and deploy binaries using install.sh
+install:
+	./install.sh
 
 ## clean: Remove build artifacts
 clean:

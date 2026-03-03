@@ -372,7 +372,7 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool, default_f
     }
 }
 
-fn handle_sync() {
+fn handle_sync(default_flag: bool, interactor: &dyn Interactor) {
     let config_dir = JkiPath::home_dir();
     println!("Syncing JKI Home at {:?}...", config_dir);
 
@@ -399,8 +399,51 @@ fn handle_sync() {
     if status.has_remote {
         println!("  - Pull --rebase...");
         if let Err(e) = git::pull_rebase(&config_dir) {
-            eprintln!("  - Pull failed: {}. Resolve conflicts manually.", e);
-            return;
+            eprintln!("  - Pull failed: {}.", e);
+            
+            let should_resolve = if default_flag {
+                println!("  - Conflict detected. Using recommended path (--default).");
+                true
+            } else {
+                interactor.confirm("Conflict detected. Automatically backup and resolve using local changes?", true)
+            };
+
+            if should_resolve {
+                match git::get_conflicting_files(&config_dir) {
+                    Ok(files) if !files.is_empty() => {
+                        for f in &files {
+                            let src = config_dir.join(f);
+                            let dst = config_dir.join(format!("{}.conflict", f));
+                            if let Err(e) = fs::copy(&src, &dst) {
+                                eprintln!("  - Warning: Failed to backup {}: {}", f, e);
+                            } else {
+                                println!("  - Backed up conflicting file to {:?}", dst);
+                            }
+                        }
+                        println!("  - Resolving conflicts using local changes (prefer local)...");
+                        if let Err(e) = git::checkout_theirs(&config_dir, &files) {
+                            eprintln!("  - Error: Failed to resolve: {}", e);
+                            return;
+                        }
+                        if let Err(e) = git::rebase_continue(&config_dir) {
+                            eprintln!("  - Error: Failed to continue rebase: {}", e);
+                            return;
+                        }
+                        println!("  - Conflicts resolved and rebase completed.");
+                    }
+                    Ok(_) => {
+                        eprintln!("  - Pull failed but no conflicts detected. Resolve manually.");
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("  - Error: Failed to get conflicting files: {}", e);
+                        return;
+                    }
+                }
+            } else {
+                println!("  - Manual resolution required. Run 'git status' to see conflicts.");
+                return;
+            }
         }
 
         println!("  - Push...");
@@ -753,17 +796,16 @@ fn main() {
     match &cli.command {
         Commands::Status => handle_status(),
         Commands::Init { force } => handle_init(*force),
-        Commands::Sync => handle_sync(),
+        Commands::Sync => handle_sync(cli.default, &interactor),
         Commands::Edit => handle_edit(),
         Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, cli.interactive, &interactor),
         Commands::Encrypt { force } => handle_encrypt(*force, cli.default, cli.interactive, &interactor),
         Commands::MasterKey(m) => handle_master_key(m, cli.interactive, cli.default, &interactor),
-        Commands::ImportWinauth { file, overwrite, force_new_vault } => 
+        Commands::ImportWinauth { file, overwrite, force_new_vault } =>
             handle_import_winauth(file, *overwrite, cli.interactive, cli.default, &interactor, *force_new_vault),
         Commands::Export { output } => handle_export(output, cli.interactive, &interactor),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

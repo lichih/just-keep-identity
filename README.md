@@ -14,13 +14,29 @@
 - `crates/jki-agent`：背景授權服務 (Session Agent)。
 - `crates/jki-core`：共享核心邏輯 (TOTP, Crypto)。
 
-## 快速開始
-1. **編譯**：
-   ```bash
-   cargo build --release
-   ```
-2. **初始化與管理**：使用 `jkim` 匯入或建立帳號。
-3. **極速查詢**：
+## 安裝與快速開始
+
+### 快速安裝
+您可以透過專案提供的安裝腳本快速完成編譯與路徑設置：
+```bash
+# 下載專案後執行
+./install.sh
+```
+或是使用 `Makefile`：
+```bash
+make install
+```
+
+### 開發者指令
+專案提供 `Makefile` 簡化開發流程：
+- `make dev`：編譯 Debug 版本或啟動 `cargo watch`。
+- `make test-all`：執行全工作區測試。
+- `make release`：編譯 Release 版本。
+- `make clean`：清理編譯產物。
+
+### 基本使用
+1. **初始化與管理**：使用 `jkim` 匯入或建立帳號。
+2. **極速查詢**：
    ```bash
    jki [pattern]
    ```

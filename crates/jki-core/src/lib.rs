@@ -369,6 +369,73 @@ pub mod git {
         }
     }
 
+    pub fn get_conflicting_files(repo_path: &Path) -> Result<Vec<String>, String> {
+        let output = Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().ok_or("Invalid path")?,
+                "diff",
+                "--name-only",
+                "--diff-filter=U",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let s = String::from_utf8_lossy(&output.stdout);
+        Ok(s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    }
+
+    pub fn checkout_theirs(repo_path: &Path, files: &[String]) -> Result<(), String> {
+        if files.is_empty() { return Ok(()); }
+        let mut args = vec!["-C", repo_path.to_str().ok_or("Invalid path")?, "checkout", "--theirs", "--"];
+        for f in files {
+            args.push(f);
+        }
+        let status = Command::new("git")
+            .args(args)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("git checkout --theirs failed".to_string())
+        }
+    }
+
+    pub fn rebase_continue(repo_path: &Path) -> Result<(), String> {
+        let status = Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().ok_or("Invalid path")?,
+                "rebase",
+                "--continue",
+            ])
+            .env("GIT_EDITOR", "true") // Skip editor for commit message
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("git rebase --continue failed".to_string())
+        }
+    }
+
+    pub fn rebase_abort(repo_path: &Path) -> Result<(), String> {
+        let status = Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().ok_or("Invalid path")?,
+                "rebase",
+                "--abort",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("git rebase --abort failed".to_string())
+        }
+    }
+
     pub fn push(repo_path: &Path) -> Result<(), String> {
         let status = Command::new("git")
             .args(["-C", repo_path.to_str().ok_or("Invalid path")?, "push"])
