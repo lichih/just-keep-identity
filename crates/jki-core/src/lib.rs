@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 
 pub mod import;
 pub mod paths;
+pub mod keychain;
 
 #[derive(Archive, Deserialize, Serialize, SerdeDeserialize, SerdeSerialize, Debug, Clone, PartialEq)]
 #[archive(check_bytes)]

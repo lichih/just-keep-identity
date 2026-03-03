@@ -19,6 +19,7 @@ secrecy = { version = "0.8", features = ["serde"] }
 rpassword = "7.3"
 atty = "0.2.14"
 crossterm = "0.29.0"
+keyring = { version = "3.0", features = ["apple-native", "windows-native"] }
 
 [dev-dependencies]
 tempfile = "3"
