@@ -6,6 +6,7 @@ use crate::State;
 pub struct TrayHandler {
     _tray: TrayIcon,
     status_item: MenuItem,
+    unlock_biometric_item: MenuItem,
     lock_item: MenuItem,
     quit_item: MenuItem,
 }
@@ -14,12 +15,14 @@ impl TrayHandler {
     pub fn new() -> (Self, Menu) {
         let menu = Menu::new();
         let status_item = MenuItem::new("Status: Unknown", false, None);
+        let unlock_biometric_item = MenuItem::new("Unlock with Biometric", true, None);
         let lock_item = MenuItem::new("Lock", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
 
         let _ = menu.append_items(&[
             &status_item,
             &PredefinedMenuItem::separator(),
+            &unlock_biometric_item,
             &lock_item,
             &PredefinedMenuItem::separator(),
             &quit_item,
@@ -40,6 +43,7 @@ impl TrayHandler {
             Self {
                 _tray: tray,
                 status_item,
+                unlock_biometric_item,
                 lock_item,
                 quit_item,
             },
@@ -48,16 +52,31 @@ impl TrayHandler {
     }
 
     pub fn update_status(&self, state: &State) {
-        let text = if state.secrets.is_some() {
+        let is_unlocked = state.secrets.is_some();
+        let text = if is_unlocked {
             "Status: Unlocked"
         } else {
             "Status: Locked"
         };
         self.status_item.set_text(text);
+        
+        // Only show "Unlock with Biometric" if locked
+        self.unlock_biometric_item.set_enabled(!is_unlocked);
+        // Only show "Lock" if unlocked
+        self.lock_item.set_enabled(is_unlocked);
     }
 
     pub fn handle_menu_event(&self, event: MenuEvent, state: Arc<Mutex<State>>) -> bool {
-        if event.id == self.lock_item.id() {
+        if event.id == self.unlock_biometric_item.id() {
+            println!("Tray: Biometric unlock requested");
+            let mut s = state.lock().unwrap();
+            match s.unlock_with_biometric() {
+                Ok(src) => println!("Tray: Biometric unlock successful: {}", src),
+                Err(e) => eprintln!("Tray: Biometric unlock failed: {}", e),
+            }
+            self.update_status(&s);
+            false
+        } else if event.id == self.lock_item.id() {
             println!("Tray: Lock requested");
             let mut s = state.lock().unwrap();
             s.secrets = None;

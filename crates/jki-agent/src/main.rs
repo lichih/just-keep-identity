@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 mod tray;
+mod biometric;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "jki-agent - Just Keep Identity Agent", long_about = None)]
@@ -97,6 +98,21 @@ impl State {
         res
     }
 
+    fn unlock_with_biometric(&mut self) -> Result<String, String> {
+        use jki_core::keychain::{KeyringStore, SecretStore};
+        
+        // 1. Explicit OS verification
+        biometric::verify_biometric("Unlock JKI Vault")?;
+        
+        // 2. Retrieve master key from keychain
+        let store = KeyringStore;
+        let master_key = store.get_secret("jki", "master_key")
+            .map_err(|e| format!("Failed to retrieve master key from keychain: {}", e))?;
+            
+        // 3. Perform standard unlock
+        self.unlock(master_key)
+    }
+
     fn get_otp(&mut self, account_id: &str) -> Result<String, String> {
         self.check_ttl();
         
@@ -159,6 +175,14 @@ fn main() -> io::Result<()> {
 
     let state = Arc::new(Mutex::new(State::new(auth)));
     let state_clone = Arc::clone(&state);
+
+    if auth == AuthSource::Biometric {
+        let mut s = state.lock().unwrap();
+        match s.unlock_with_biometric() {
+            Ok(src) => println!("Biometric unlock successful: {}", src),
+            Err(e) => eprintln!("Biometric unlock failed: {}", e),
+        }
+    }
 
     // Socket listener thread
     thread::spawn(move || {
@@ -252,6 +276,13 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>) -> io:
                 match s.unlock(master_key.into()) {
                     Ok(source) => Response::Unlocked(source),
                     Err(e) => Response::Error(format!("Unlock failed: {}", e)),
+                }
+            }
+            Request::UnlockBiometric => {
+                let mut s = state.lock().unwrap();
+                match s.unlock_with_biometric() {
+                    Ok(source) => Response::Unlocked(source),
+                    Err(e) => Response::Error(format!("Biometric unlock failed: {}", e)),
                 }
             }
             Request::GetOTP { account_id } => {

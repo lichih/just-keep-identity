@@ -62,7 +62,12 @@ struct MetadataFile {
     version: u32,
 }
 
-fn handle_agent(cmd: &AgentCommands, auth: AuthSource) {
+fn handle_agent(cmd: &AgentCommands, auth: AuthSource, quiet: bool) {
+    if !ensure_agent_running(quiet) {
+        eprintln!("Failed to start jki-agent.");
+        process::exit(1);
+    }
+
     match cmd {
         AgentCommands::Ping => {
             if AgentClient::ping() { println!("Agent is alive (Pong)"); }
@@ -72,12 +77,17 @@ fn handle_agent(cmd: &AgentCommands, auth: AuthSource) {
             }
         }
         AgentCommands::Unlock => {
-            let interactor = TerminalInteractor;
-            let master_key = match acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
-                Ok(k) => k,
-                Err(e) => { eprintln!("Authentication failed: {}", e); process::exit(1); }
+            let res = if auth == AuthSource::Biometric {
+                AgentClient::unlock_biometric()
+            } else {
+                let interactor = TerminalInteractor;
+                match acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
+                    Ok(k) => AgentClient::unlock(&k),
+                    Err(e) => { eprintln!("Authentication failed: {}", e); process::exit(1); }
+                }
             };
-            match AgentClient::unlock(&master_key) {
+
+            match res {
                 Ok(source) => println!("Agent unlocked successfully using {}", source),
                 Err(e) => { eprintln!("Unlock failed: {}", e); process::exit(1); }
             }
@@ -115,7 +125,7 @@ fn run(cli: Cli) -> Result<(), i32> {
     if let Some(cmd) = &cli.command {
         match cmd {
             Commands::Agent { cmd } => {
-                handle_agent(cmd, auth);
+                handle_agent(cmd, auth, cli.quiet);
                 return Ok(());
             }
         }
@@ -206,13 +216,28 @@ fn run(cli: Cli) -> Result<(), i32> {
                     }
                     Err(e) if e.contains("Agent is locked") => {
                         if !cli.quiet { eprintln!("Agent is locked. Attempting to unlock..."); }
-                        let interactor = TerminalInteractor;
-                        if let Ok(master_key) = acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
-                            if let Ok(_) = AgentClient::unlock(&master_key) {
+                        
+                        let res = if auth == AuthSource::Biometric {
+                            AgentClient::unlock_biometric()
+                        } else {
+                            let interactor = TerminalInteractor;
+                            if let Ok(master_key) = acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
+                                AgentClient::unlock(&master_key)
+                            } else {
+                                Err("Failed to acquire master key".to_string())
+                            }
+                        };
+
+                        match res {
+                            Ok(_source) => {
                                 if let Ok(otp) = AgentClient::get_otp(&acc.id) {
                                     handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
                                     return Ok(());
                                 }
+                            },
+                            Err(e) => {
+                                eprintln!("Unlock failed: {}", e);
+                                return Err(1);
                             }
                         }
                     }

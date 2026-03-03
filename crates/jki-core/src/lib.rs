@@ -387,6 +387,7 @@ pub mod agent {
     pub enum Request {
         Ping,
         Unlock { master_key: String },
+        UnlockBiometric,
         GetOTP { account_id: String },
         GetMasterKey,
         Reload,
@@ -432,6 +433,14 @@ pub mod agent {
 
         pub fn unlock(master_key: &SecretString) -> Result<String, String> {
             match Self::call(Request::Unlock { master_key: master_key.expose_secret().clone() }) {
+                Ok(Response::Unlocked(source)) => Ok(source),
+                Ok(Response::Error(e)) => Err(e),
+                _ => Err("Invalid agent response".to_string()),
+            }
+        }
+
+        pub fn unlock_biometric() -> Result<String, String> {
+            match Self::call(Request::UnlockBiometric) {
                 Ok(Response::Unlocked(source)) => Ok(source),
                 Ok(Response::Error(e)) => Err(e),
                 _ => Err("Invalid agent response".to_string()),
