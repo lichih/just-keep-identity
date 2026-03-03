@@ -425,6 +425,10 @@ fn handle_sync(default_flag: bool, interactor: &dyn Interactor) {
                             eprintln!("  - Error: Failed to resolve: {}", e);
                             return;
                         }
+                        if let Err(e) = git::add(&config_dir, &files) {
+                            eprintln!("  - Error: Failed to add resolved files: {}", e);
+                            return;
+                        }
                         if let Err(e) = git::rebase_continue(&config_dir) {
                             eprintln!("  - Error: Failed to continue rebase: {}", e);
                             return;

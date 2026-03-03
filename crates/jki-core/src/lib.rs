@@ -338,6 +338,23 @@ pub mod git {
         }
     }
 
+    pub fn add(repo_path: &Path, files: &[String]) -> Result<(), String> {
+        if files.is_empty() { return Ok(()); }
+        let mut args = vec!["-C", repo_path.to_str().ok_or("Invalid path")?, "add", "--"];
+        for f in files {
+            args.push(f);
+        }
+        let status = Command::new("git")
+            .args(args)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("git add failed".to_string())
+        }
+    }
+
     pub fn commit(repo_path: &Path, message: &str) -> Result<bool, String> {
         let status = Command::new("git")
             .args([
