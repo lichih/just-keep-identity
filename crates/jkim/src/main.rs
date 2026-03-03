@@ -11,6 +11,7 @@ use jki_core::{
     Interactor,
     TerminalInteractor,
     keychain::{KeyringStore, SecretStore},
+    AuthSource,
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -30,7 +31,11 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Force interactive master key input, ignoring master.key file
+    /// Authentication and data source
+    #[arg(short = 'A', long, global = true, default_value = "auto")]
+    pub auth: AuthSource,
+
+    /// Force interactive master key input (alias for --auth interactive)
     #[arg(short = 'I', long, global = true)]
     pub interactive: bool,
 
@@ -126,7 +131,7 @@ struct MetadataFile {
     version: u32,
 }
 
-fn handle_export(output: &Option<PathBuf>, force_interactive: bool, interactor: &dyn Interactor) {
+fn handle_export(output: &Option<PathBuf>, auth: AuthSource, interactor: &dyn Interactor) {
     let meta_path = JkiPath::metadata_path();
     let sec_path = JkiPath::secrets_path();
     let dec_path = JkiPath::decrypted_secrets_path();
@@ -137,7 +142,7 @@ fn handle_export(output: &Option<PathBuf>, force_interactive: bool, interactor: 
     }
 
     // 1. Acquire Master Key
-    let master_key = acquire_master_key(force_interactive, interactor, Some(&KeyringStore)).unwrap_or_else(|e| {
+    let master_key = acquire_master_key(auth, interactor, Some(&KeyringStore)).unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
         std::process::exit(1);
     });
@@ -243,7 +248,7 @@ fn handle_status() {
     println!("  - Secrets Path    : {:?}", JkiPath::secrets_path());
 }
 
-fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool, default_flag: bool, interactor: &dyn Interactor) {
+fn handle_master_key(cmd: &MasterKeyCommands, auth: AuthSource, default_flag: bool, interactor: &dyn Interactor) {
     let key_path = JkiPath::master_key_path();
     let sec_path = JkiPath::secrets_path();
 
@@ -307,7 +312,7 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool, default_f
         }
         MasterKeyCommands::Change { commit } => {
             // 1. Try to get current key to decrypt
-            let mut current_key = acquire_master_key(force_interactive, interactor, Some(&KeyringStore))
+            let mut current_key = acquire_master_key(auth, interactor, Some(&KeyringStore))
                 .unwrap_or_else(|_| interactor.prompt_password("Enter current Master Key").expect("Input failed"));
             
             let mut secrets_data = None;
@@ -363,9 +368,6 @@ fn handle_master_key(cmd: &MasterKeyCommands, force_interactive: bool, default_f
                 } else {
                     println!("Master Key updated in system keychain.");
                 }
-            } else {
-                 // If not in keychain, ask or just skip? Mission says set/remove has flags.
-                 // For Change, maybe we should keep consistency.
             }
 
             println!("Master Key changed successfully.");
@@ -540,7 +542,7 @@ fn handle_edit() {
     }
 }
 
-fn handle_decrypt(force: bool, keep: bool, remove_key: bool, default_flag: bool, force_interactive: bool, interactor: &dyn Interactor) {
+fn handle_decrypt(force: bool, keep: bool, remove_key: bool, default_flag: bool, auth: AuthSource, interactor: &dyn Interactor) {
     let sec_path = JkiPath::secrets_path();
     let dec_path = JkiPath::decrypted_secrets_path();
     let key_path = JkiPath::master_key_path();
@@ -556,7 +558,7 @@ fn handle_decrypt(force: bool, keep: bool, remove_key: bool, default_flag: bool,
         }
     }
 
-    let master_key = acquire_master_key(force_interactive, interactor, Some(&KeyringStore)).expect("Authentication failed");
+    let master_key = acquire_master_key(auth, interactor, Some(&KeyringStore)).expect("Authentication failed");
     let encrypted = fs::read(&sec_path).expect("Failed to read secrets");
     let decrypted = decrypt_with_master_key(&encrypted, &master_key).expect("Decryption failed");
 
@@ -591,7 +593,7 @@ fn handle_decrypt(force: bool, keep: bool, remove_key: bool, default_flag: bool,
     }
 }
 
-fn handle_encrypt(force: bool, default_flag: bool, force_interactive: bool, interactor: &dyn Interactor) {
+fn handle_encrypt(force: bool, default_flag: bool, auth: AuthSource, interactor: &dyn Interactor) {
     let sec_path = JkiPath::secrets_path();
     let dec_path = JkiPath::decrypted_secrets_path();
 
@@ -606,7 +608,7 @@ fn handle_encrypt(force: bool, default_flag: bool, force_interactive: bool, inte
         }
     }
 
-    let master_key = acquire_master_key(force_interactive, interactor, Some(&KeyringStore)).expect("Authentication failed");
+    let master_key = acquire_master_key(auth, interactor, Some(&KeyringStore)).expect("Authentication failed");
     let decrypted = fs::read(&dec_path).expect("Failed to read plaintext secrets");
     let encrypted = encrypt_with_master_key(&decrypted, &master_key).expect("Encryption failed");
 
@@ -682,7 +684,7 @@ fn handle_init(force: bool) {
     println!("  - Run 'jkim import-winauth <file>' to add accounts.");
 }
 
-fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: bool, default_flag: bool, interactor: &dyn Interactor, force_new_vault: bool) {
+fn handle_import_winauth(file: &PathBuf, overwrite: bool, auth: AuthSource, default_flag: bool, interactor: &dyn Interactor, force_new_vault: bool) {
     if !file.exists() { eprintln!("Error: File not found."); return; }
 
     let meta_path = JkiPath::metadata_path();
@@ -697,7 +699,7 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: boo
 
     // 2. Acquire Master Key
     println!("Please unlock your vault to perform import.");
-    let master_key = acquire_master_key(force_interactive, interactor, Some(&KeyringStore)).unwrap_or_else(|e| {
+    let master_key = acquire_master_key(auth, interactor, Some(&KeyringStore)).unwrap_or_else(|e| {
         eprintln!("Authentication failed: {}", e);
         std::process::exit(1);
     });
@@ -809,18 +811,22 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, force_interactive: boo
 fn main() {
     let cli = Cli::parse();
     let interactor = TerminalInteractor;
+    let mut auth = cli.auth;
+    if cli.interactive {
+        auth = AuthSource::Interactive;
+    }
 
     match &cli.command {
         Commands::Status => handle_status(),
         Commands::Init { force } => handle_init(*force),
         Commands::Sync => handle_sync(cli.default, &interactor),
         Commands::Edit => handle_edit(),
-        Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, cli.interactive, &interactor),
-        Commands::Encrypt { force } => handle_encrypt(*force, cli.default, cli.interactive, &interactor),
-        Commands::MasterKey(m) => handle_master_key(m, cli.interactive, cli.default, &interactor),
+        Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, auth, &interactor),
+        Commands::Encrypt { force } => handle_encrypt(*force, cli.default, auth, &interactor),
+        Commands::MasterKey(m) => handle_master_key(m, auth, cli.default, &interactor),
         Commands::ImportWinauth { file, overwrite, force_new_vault } =>
-            handle_import_winauth(file, *overwrite, cli.interactive, cli.default, &interactor, *force_new_vault),
-        Commands::Export { output } => handle_export(output, cli.interactive, &interactor),
+            handle_import_winauth(file, *overwrite, auth, cli.default, &interactor, *force_new_vault),
+        Commands::Export { output } => handle_export(output, auth, &interactor),
     }
 }
 #[cfg(test)]
@@ -846,7 +852,7 @@ mod tests {
             passwords: RefCell::new(vec!["newpass".to_string(), "newpass".to_string()]),
             confirms: RefCell::new(vec![]),
         };
-        handle_master_key(&cmd, false, false, &interactor);
+        handle_master_key(&cmd, AuthSource::Auto, false, &interactor);
 
         assert!(home.join("master.key").exists());
         assert_eq!(fs::read_to_string(home.join("master.key")).unwrap(), "newpass");
@@ -880,7 +886,7 @@ mod tests {
             passwords: RefCell::new(vec!["newpass".to_string(), "newpass".to_string()]),
             confirms: RefCell::new(vec![]),
         };
-        handle_master_key(&cmd, false, false, &interactor);
+        handle_master_key(&cmd, AuthSource::Auto, false, &interactor);
 
         // 3. Verify
         assert_eq!(fs::read_to_string(home.join("master.key")).unwrap(), "newpass");
@@ -905,7 +911,7 @@ mod tests {
             passwords: RefCell::new(vec![]),
             confirms: RefCell::new(vec![]),
         };
-        handle_master_key(&cmd, false, false, &interactor);
+        handle_master_key(&cmd, AuthSource::Auto, false, &interactor);
 
         assert!(!home.join("master.key").exists());
     }
@@ -965,7 +971,7 @@ mod tests {
             passwords: RefCell::new(vec![]),
             confirms: RefCell::new(vec![]),
         };
-        handle_import_winauth(&import_file, false, false, true, &interactor, false);
+        handle_import_winauth(&import_file, false, AuthSource::Auto, true, &interactor, false);
 
         // 4. Verify files
         let meta_path = home.join("vault.metadata.json");
@@ -1033,13 +1039,13 @@ mod tests {
         };
         
         // 1. Decrypt: Delete .age (true), Keep master.key (false)
-        handle_decrypt(false, false, false, false, false, &interactor);
+        handle_decrypt(false, false, false, false, AuthSource::Auto, &interactor);
         assert!(dec_path.exists());
         assert!(!sec_path.exists());
         assert!(key_path.exists());
 
         // 2. Encrypt (uses master.key, no prompt needed)
-        handle_encrypt(false, false, false, &interactor);
+        handle_encrypt(false, false, AuthSource::Auto, &interactor);
         assert!(!dec_path.exists());
         assert!(sec_path.exists());
     }

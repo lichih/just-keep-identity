@@ -8,6 +8,7 @@ use jki_core::{
     generate_otp,
     Account,
     AccountType,
+    AuthSource,
 };
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::thread;
@@ -18,9 +19,9 @@ use std::time::{Duration, Instant};
 #[derive(Parser, Debug)]
 #[command(author, version, about = "jki-agent - Just Keep Identity Agent", long_about = None)]
 struct Args {
-    /// Force loading from encrypted .age files only
-    #[arg(long)]
-    force_age: bool,
+    /// Authentication and data source
+    #[arg(short = 'A', long, default_value = "auto")]
+    auth: AuthSource,
 }
 
 struct State {
@@ -28,17 +29,17 @@ struct State {
     master_key: Option<secrecy::SecretString>,
     last_unlocked: Option<Instant>,
     ttl: Duration,
-    force_age: bool,
+    auth: AuthSource,
 }
 
 impl State {
-    fn new(force_age: bool) -> Self {
+    fn new(auth: AuthSource) -> Self {
         Self {
             secrets: None,
             master_key: None,
             last_unlocked: None,
             ttl: Duration::from_secs(3600), // 1 hour TTL
-            force_age,
+            auth,
         }
     }
 
@@ -56,7 +57,7 @@ impl State {
         let sec_path = JkiPath::secrets_path();
         let decrypted_path = JkiPath::decrypted_secrets_path();
 
-        let res = if sec_path.exists() {
+        let res = if sec_path.exists() && self.auth != AuthSource::Plaintext {
             let sec_encrypted = std::fs::read(&sec_path).map_err(|e| e.to_string())?;
             let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key)?;
             let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
@@ -64,8 +65,19 @@ impl State {
             self.secrets = Some(secrets_map);
             self.last_unlocked = Some(Instant::now());
             Ok("Encrypted Vault".to_string())
-        } else if self.force_age {
-            Err("Force-age mode enabled: Encrypted vault missing. Refusing to load plaintext.".to_string())
+        } else if self.auth == AuthSource::Plaintext {
+            if decrypted_path.exists() {
+                let sec_json = std::fs::read(&decrypted_path).map_err(|e| e.to_string())?;
+                let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
+
+                self.secrets = Some(secrets_map);
+                self.last_unlocked = Some(Instant::now());
+                Ok("Plaintext Vault".to_string())
+            } else {
+                Err("Plaintext mode enabled: Plaintext vault missing.".to_string())
+            }
+        } else if self.auth != AuthSource::Auto {
+            Err(format!("Auth mode {:?} enabled: Encrypted vault missing. Refusing to load plaintext.", self.auth))
         } else if decrypted_path.exists() {
             let sec_json = std::fs::read(&decrypted_path).map_err(|e| e.to_string())?;
             let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).map_err(|e| e.to_string())?;
@@ -112,17 +124,27 @@ impl State {
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
-    let mut force_age = args.force_age;
-    if std::env::var("JKI_FORCE_AGE").map(|v| v == "1").unwrap_or(false) {
-        force_age = true;
+    let mut auth = args.auth;
+    
+    // Legacy support for JKI_FORCE_AGE env var
+    if std::env::var("JKI_FORCE_AGE").map(|v| v == "1").unwrap_or(false) && auth == AuthSource::Auto {
+        auth = AuthSource::Agent;
+    }
+
+    if auth == AuthSource::Biometric {
+        println!("Biometric auth mode requested (agent)");
     }
 
     let socket_path = JkiPath::agent_socket_path();
     let name = socket_path.to_str().unwrap();
 
     // Pre-flight check
-    if force_age && !JkiPath::secrets_path().exists() {
-        eprintln!("CRITICAL: Force-age mode enabled but encrypted vault (.age) is missing. Exit.");
+    if auth != AuthSource::Auto && auth != AuthSource::Plaintext && !JkiPath::secrets_path().exists() {
+        eprintln!("CRITICAL: Auth mode {:?} enabled but encrypted vault (.age) is missing. Exit.", auth);
+        std::process::exit(1);
+    }
+    if auth == AuthSource::Plaintext && !JkiPath::decrypted_secrets_path().exists() {
+        eprintln!("CRITICAL: Plaintext mode enabled but vault.secrets.json is missing. Exit.");
         std::process::exit(1);
     }
 
@@ -132,9 +154,9 @@ fn main() -> io::Result<()> {
     }
 
     let listener = LocalSocketListener::bind(name)?;
-    println!("jki-agent listening on {:?} (force_age: {})", socket_path, force_age);
+    println!("jki-agent listening on {:?} (auth: {:?})", socket_path, auth);
 
-    let state = Arc::new(Mutex::new(State::new(force_age)));
+    let state = Arc::new(Mutex::new(State::new(auth)));
 
     for stream in listener.incoming() {
         match stream {
@@ -244,7 +266,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_client_ping() {
-        let state = Arc::new(Mutex::new(State::new(false)));
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
         let req = Request::Ping;
         let mut input_data = serde_json::to_vec(&req).unwrap();
         input_data.push(b'\n');
@@ -263,7 +285,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_client_get_otp_locked() {
-        let state = Arc::new(Mutex::new(State::new(false)));
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
         let req = Request::GetOTP { account_id: "test".to_string() };
         let mut input_data = serde_json::to_vec(&req).unwrap();
         input_data.push(b'\n');
@@ -311,7 +333,7 @@ mod tests {
         let encrypted = encrypt_with_master_key(&sec_json, &master_key).unwrap();
         std::fs::write(&sec_path, encrypted).unwrap();
 
-        let state = Arc::new(Mutex::new(State::new(false)));
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
 
         // 2. Unlock Request
         let unlock_req = Request::Unlock { master_key: master_key_val.to_string() };
@@ -345,7 +367,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_client_malformed_json() {
-        let state = Arc::new(Mutex::new(State::new(false)));
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
         let input_data = b"not a json\n";
         let mut stream = MockStream { input: Cursor::new(input_data.to_vec()), output: Vec::new() };
         handle_client_io(&mut stream, state).unwrap();
@@ -361,7 +383,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_client_reload() {
-        let state = Arc::new(Mutex::new(State::new(false)));
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
         {
             let mut s = state.lock().unwrap();
             s.secrets = Some(HashMap::new()); // Set as unlocked
@@ -390,7 +412,7 @@ mod tests {
     #[serial]
     fn test_handle_client_get_master_key() {
         use secrecy::SecretString;
-        let state = Arc::new(Mutex::new(State::new(false)));
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
         let key = "secret-pass";
         {
             let mut s = state.lock().unwrap();
@@ -414,12 +436,12 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_force_age_refusal() {
+    fn test_auth_agent_refusal_plaintext() {
         use tempfile::tempdir;
         use std::env;
 
         let temp = tempdir().unwrap();
-        let home = temp.path().join("jki_home_force_age");
+        let home = temp.path().join("jki_home_auth_refusal");
         std::fs::create_dir_all(&home).unwrap();
         
         let dec_path = home.join("vault.secrets.json");
@@ -438,8 +460,8 @@ mod tests {
         let sec_json = serde_json::to_vec(&secrets_map).unwrap();
         std::fs::write(&dec_path, sec_json).unwrap();
 
-        // Enable force_age
-        let state = Arc::new(Mutex::new(State::new(true)));
+        // Enable agent auth (which refuses plaintext if encrypted missing)
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Agent)));
 
         let master_key_val = "testpass";
         let unlock_req = Request::Unlock { master_key: master_key_val.to_string() };
@@ -452,8 +474,8 @@ mod tests {
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
         match resp {
-            Response::Error(msg) => assert!(msg.contains("Force-age mode enabled: Encrypted vault missing")),
-            _ => panic!("Expected Error (force-age), got {:?}", resp),
+            Response::Error(msg) => assert!(msg.contains("enabled: Encrypted vault missing")),
+            _ => panic!("Expected Error (auth refusal), got {:?}", resp),
         }
 
         // Cleanup env

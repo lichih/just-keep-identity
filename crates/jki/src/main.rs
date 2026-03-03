@@ -3,7 +3,7 @@ use jki_core::{
     agent::AgentClient,
     generate_otp, paths::JkiPath,
     Account, AccountSecret, acquire_master_key, decrypt_with_master_key, search_accounts,
-    TerminalInteractor, keychain::KeyringStore, ensure_agent_running,
+    TerminalInteractor, keychain::KeyringStore, ensure_agent_running, AuthSource,
 };
 use std::fs;
 use std::process;
@@ -19,7 +19,11 @@ struct Cli {
     /// Search patterns (used if no subcommand is provided)
     pub patterns: Vec<String>,
 
-    /// Force interactive master key input, ignoring master.key file
+    /// Authentication and data source
+    #[arg(short = 'A', long, default_value = "auto")]
+    pub auth: AuthSource,
+
+    /// Force interactive master key input (alias for --auth interactive)
     #[arg(short = 'I', long)]
     pub interactive: bool,
 
@@ -31,10 +35,6 @@ struct Cli {
     pub quiet: bool,
     #[arg(short = 's', long = "stdout")]
     pub stdout: bool,
-
-    /// Force using agent or local decryption, bypassing plaintext vault
-    #[arg(long)]
-    pub force_agent: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -62,7 +62,7 @@ struct MetadataFile {
     version: u32,
 }
 
-fn handle_agent(cmd: &AgentCommands) {
+fn handle_agent(cmd: &AgentCommands, auth: AuthSource) {
     match cmd {
         AgentCommands::Ping => {
             if AgentClient::ping() { println!("Agent is alive (Pong)"); }
@@ -73,7 +73,7 @@ fn handle_agent(cmd: &AgentCommands) {
         }
         AgentCommands::Unlock => {
             let interactor = TerminalInteractor;
-            let master_key = match acquire_master_key(false, &interactor, Some(&KeyringStore)) {
+            let master_key = match acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
                 Ok(k) => k,
                 Err(e) => { eprintln!("Authentication failed: {}", e); process::exit(1); }
             };
@@ -107,10 +107,15 @@ fn handle_otp_output(otp: String, label: String, source: &str, stdout_flag: bool
 }
 
 fn run(cli: Cli) -> Result<(), i32> {
+    let mut auth = cli.auth;
+    if cli.interactive {
+        auth = AuthSource::Interactive;
+    }
+
     if let Some(cmd) = &cli.command {
         match cmd {
             Commands::Agent { cmd } => {
-                handle_agent(cmd);
+                handle_agent(cmd, auth);
                 return Ok(());
             }
         }
@@ -166,8 +171,8 @@ fn run(cli: Cli) -> Result<(), i32> {
     if let Some(acc) = target_acc {
         let label = format!("{}{}", acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         
-        // 1. Plaintext Path: Check vault.secrets.json first (Fastest)
-        if !cli.force_agent {
+        // 1. Plaintext Path: Check vault.secrets.json (Explicitly requested or Auto)
+        if auth == AuthSource::Plaintext || auth == AuthSource::Auto {
             let decrypted_path = JkiPath::decrypted_secrets_path();
             if decrypted_path.exists() {
                 if let Ok(content) = fs::read(&decrypted_path) {
@@ -185,74 +190,92 @@ fn run(cli: Cli) -> Result<(), i32> {
                     }
                 }
             }
-        }
-
-        // 2. Agent Path: Connect to jki-agent
-        if ensure_agent_running(cli.quiet) {
-            match AgentClient::get_otp(&acc.id) {
-                Ok(otp) => {
-                    handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
-                    return Ok(());
-                }
-                Err(e) if e.contains("Agent is locked") => {
-                    if !cli.quiet { eprintln!("Agent is locked. Attempting to unlock..."); }
-                    let interactor = TerminalInteractor;
-                    if let Ok(master_key) = acquire_master_key(cli.interactive, &interactor, Some(&KeyringStore)) {
-                        if let Ok(_) = AgentClient::unlock(&master_key) {
-                            if let Ok(otp) = AgentClient::get_otp(&acc.id) {
-                                handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    if !cli.quiet { eprintln!("Error: Agent failed: {}", e); }
-                }
+            if auth == AuthSource::Plaintext {
+                eprintln!("Error: Plaintext vault missing.");
+                return Err(1);
             }
         }
 
-        // 3 & 4. Static Key Path & Interactive Path (Fallback)
-        if !cli.quiet { eprintln!("Falling back to local decryption..."); }
-        let sec_path = JkiPath::secrets_path();
-        let interactor = TerminalInteractor;
-        
-        if !sec_path.exists() {
-            eprintln!("Error: Secrets file missing at {:?}. Please run jkim init or restore from backup.", sec_path);
-            return Err(1);
+        // 2. Agent Path: Connect to jki-agent (Explicitly requested or Auto)
+        if auth == AuthSource::Agent || auth == AuthSource::Auto || auth == AuthSource::Biometric {
+            if ensure_agent_running(cli.quiet) {
+                match AgentClient::get_otp(&acc.id) {
+                    Ok(otp) => {
+                        handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
+                        return Ok(());
+                    }
+                    Err(e) if e.contains("Agent is locked") => {
+                        if !cli.quiet { eprintln!("Agent is locked. Attempting to unlock..."); }
+                        let interactor = TerminalInteractor;
+                        if let Ok(master_key) = acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
+                            if let Ok(_) = AgentClient::unlock(&master_key) {
+                                if let Ok(otp) = AgentClient::get_otp(&acc.id) {
+                                    handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if auth != AuthSource::Auto && !cli.quiet {
+                             eprintln!("Error: Agent failed: {}", e);
+                             return Err(1);
+                        }
+                        if !cli.quiet { eprintln!("Error: Agent failed: {}", e); }
+                    }
+                }
+            } else if auth != AuthSource::Auto {
+                eprintln!("Error: jki-agent could not be started.");
+                return Err(1);
+            }
         }
 
-        let master_key = acquire_master_key(cli.interactive, &interactor, Some(&KeyringStore)).unwrap_or_else(|e| {
-            eprintln!("Authentication failed: {}", e);
-            process::exit(101);
-        });
-
-        // Lazy Unlock: Sync to Agent
-        if ensure_agent_running(true) {
-            let _ = AgentClient::unlock(&master_key);
-        }
-
-        let sec_encrypted = fs::read(&sec_path).map_err(|e| {
-            eprintln!("Error: Failed to read secrets file: {}", e);
-            1
-        })?;
-        let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).expect("Decryption failed");
-        let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).expect("Secrets parse error");
-
-        if let Some(s) = secrets_map.get(&acc.id) {
-            let mut full_acc = acc.clone();
-            full_acc.secret = s.secret.clone();
-            full_acc.digits = s.digits;
-            full_acc.algorithm = s.algorithm.clone();
+        // 3 & 4. Local Decryption (Keyfile, Keychain, Interactive, or Auto fallback)
+        if auth != AuthSource::Agent && auth != AuthSource::Plaintext && auth != AuthSource::Biometric {
+            if auth == AuthSource::Auto && !cli.quiet { eprintln!("Falling back to local decryption..."); }
+            let sec_path = JkiPath::secrets_path();
+            let interactor = TerminalInteractor;
             
-            let otp = generate_otp(&full_acc).unwrap_or_else(|e| {
-                eprintln!("OTP generation failed: {}", e);
-                process::exit(102);
-            });
-            handle_otp_output(otp, label, "Local", stdout_flag, cli.quiet);
-        } else {
-            eprintln!("Error: Secret not found for account {}", acc.id);
-            return Err(1);
+            if !sec_path.exists() {
+                eprintln!("Error: Secrets file missing at {:?}.", sec_path);
+                return Err(1);
+            }
+
+            let master_key = match acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("Authentication failed: {}", e);
+                    return Err(101);
+                }
+            };
+
+            // Lazy Unlock: Sync to Agent (best effort)
+            if ensure_agent_running(true) {
+                let _ = AgentClient::unlock(&master_key);
+            }
+
+            let sec_encrypted = fs::read(&sec_path).map_err(|e| {
+                eprintln!("Error: Failed to read secrets file: {}", e);
+                1
+            })?;
+            let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).expect("Decryption failed");
+            let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).expect("Secrets parse error");
+
+            if let Some(s) = secrets_map.get(&acc.id) {
+                let mut full_acc = acc.clone();
+                full_acc.secret = s.secret.clone();
+                full_acc.digits = s.digits;
+                full_acc.algorithm = s.algorithm.clone();
+                
+                let otp = generate_otp(&full_acc).unwrap_or_else(|e| {
+                    eprintln!("OTP generation failed: {}", e);
+                    process::exit(102);
+                });
+                handle_otp_output(otp, label, "Local", stdout_flag, cli.quiet);
+            } else {
+                eprintln!("Error: Secret not found for account {}", acc.id);
+                return Err(1);
+            }
         }
     }
     Ok(())
@@ -335,12 +358,12 @@ mod tests {
         let cli = Cli {
             command: None,
             patterns: vec!["google".to_string()],
+            auth: AuthSource::Auto,
             interactive: false,
             list: false,
             otp: false,
             quiet: true,
             stdout: true,
-            force_agent: false,
         };
         
         let result = run(cli);
@@ -350,7 +373,7 @@ mod tests {
     #[test]
     #[serial]
     #[cfg(unix)]
-    fn test_run_force_agent_skips_plaintext() {
+    fn test_run_auth_agent_skips_plaintext() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempdir().unwrap();
         let home = temp.path().join("jki_home");
@@ -392,29 +415,29 @@ mod tests {
         let encrypted = encrypt_with_master_key(&serde_json::to_vec(&plaintext_map).unwrap(), &master_key).unwrap();
         fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
 
-        // Run without force_agent -> should use plaintext
+        // Run without -A agent -> should use plaintext
         let cli_no_force = Cli {
             command: None,
             patterns: vec!["google".to_string()],
-            interactive: false,
-            list: false,
-            otp: false,
-            quiet: false, // Show output to verify manually if needed, but here we just check result
-            stdout: true,
-            force_agent: false,
-        };
-        assert!(run(cli_no_force).is_ok());
-
-        // Run with force_agent -> should skip plaintext and use local (since no agent)
-        let cli_force = Cli {
-            command: None,
-            patterns: vec!["google".to_string()],
+            auth: AuthSource::Auto,
             interactive: false,
             list: false,
             otp: false,
             quiet: false,
             stdout: true,
-            force_agent: true,
+        };
+        assert!(run(cli_no_force).is_ok());
+
+        // Run with auth:agent -> should skip plaintext and use local (since no agent)
+        let cli_force = Cli {
+            command: None,
+            patterns: vec!["google".to_string()],
+            auth: AuthSource::Agent,
+            interactive: false,
+            list: false,
+            otp: false,
+            quiet: false,
+            stdout: true,
         };
         assert!(run(cli_force).is_ok());
     }

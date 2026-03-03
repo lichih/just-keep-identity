@@ -243,40 +243,85 @@ impl Interactor for MockInteractor {
     }
 }
 
+#[derive(clap::ValueEnum, serde::Deserialize, serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthSource {
+    #[default]
+    Auto,
+    Agent,
+    Interactive,
+    Keyfile,
+    Keychain,
+    Plaintext,
+    Biometric,
+}
+
 pub fn acquire_master_key(
-    force_interactive: bool,
+    source: AuthSource,
     interactor: &dyn Interactor,
     secret_store: Option<&dyn keychain::SecretStore>,
 ) -> Result<SecretString, String> {
     use crate::paths::JkiPath;
 
-    if force_interactive {
-        return interactor.prompt_password("Enter Master Key");
-    }
+    match source {
+        AuthSource::Auto => {
+            // 1. Try Agent first (Session aware)
+            if let Ok(key) = agent::AgentClient::get_master_key() {
+                return Ok(key);
+            }
 
-    // 1. Try Agent first (Session aware)
-    if let Ok(key) = agent::AgentClient::get_master_key() {
-        return Ok(key);
-    }
+            // 2. Try Secret Store (Keychain/Keyring)
+            if let Some(store) = secret_store {
+                if let Ok(key) = store.get_secret("jki", "master_key") {
+                    return Ok(key);
+                }
+            }
 
-    // 2. Try Secret Store (Keychain/Keyring)
-    if let Some(store) = secret_store {
-        if let Ok(key) = store.get_secret("jki", "master_key") {
-            return Ok(key);
+            // 3. Try master.key file
+            let key_path = JkiPath::master_key_path();
+            if key_path.exists() {
+                if JkiPath::check_secure_permissions(&key_path).is_ok() {
+                    let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
+                    return Ok(SecretString::from(content.trim().to_string()));
+                }
+            }
+
+            // 4. Fallback to interactive prompt
+            interactor.prompt_password("Enter Master Key")
+        }
+        AuthSource::Agent => {
+            agent::AgentClient::get_master_key().map_err(|e| format!("Agent auth failed: {}", e))
+        }
+        AuthSource::Interactive => {
+            interactor.prompt_password("Enter Master Key")
+        }
+        AuthSource::Keyfile => {
+            let key_path = JkiPath::master_key_path();
+            if key_path.exists() {
+                if JkiPath::check_secure_permissions(&key_path).is_ok() {
+                    let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
+                    return Ok(SecretString::from(content.trim().to_string()));
+                } else {
+                    return Err("Keyfile auth failed: Insecure permissions".to_string());
+                }
+            }
+            Err("Keyfile auth failed: File missing".to_string())
+        }
+        AuthSource::Keychain => {
+            if let Some(store) = secret_store {
+                store.get_secret("jki", "master_key").map_err(|e| format!("Keychain auth failed: {}", e))
+            } else {
+                Err("Keychain auth failed: Store not provided".to_string())
+            }
+        }
+        AuthSource::Biometric => {
+            // For now, biometric is linked to agent which might trigger OS prompt
+            agent::AgentClient::get_master_key().map_err(|e| format!("Biometric (Agent) auth failed: {}", e))
+        }
+        AuthSource::Plaintext => {
+            Err("Plaintext auth source not applicable for master key acquisition".to_string())
         }
     }
-
-    // 3. Try master.key file
-    let key_path = JkiPath::master_key_path();
-    if key_path.exists() {
-        if JkiPath::check_secure_permissions(&key_path).is_ok() {
-            let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
-            return Ok(SecretString::from(content.trim().to_string()));
-        }
-    }
-
-    // 4. Fallback to interactive prompt
-    interactor.prompt_password("Enter Master Key")
 }
 
 pub fn ensure_agent_running(quiet: bool) -> bool {
@@ -795,7 +840,7 @@ mod tests {
         let key_path = crate::paths::JkiPath::master_key_path();
 
         // 1. Force Interactive
-        let key = acquire_master_key(true, &interactor, Some(&mock_store)).unwrap();
+        let key = acquire_master_key(AuthSource::Interactive, &interactor, Some(&mock_store)).unwrap();
         assert_eq!(key.expose_secret(), "interactive_pass");
 
         // 2. Secret Store (Keychain) Priority
@@ -807,18 +852,18 @@ mod tests {
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        let key = acquire_master_key(false, &interactor, Some(&mock_store)).unwrap();
+        let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
         assert_eq!(key.expose_secret(), "keychain_pass");
 
         // 3. File Priority (when keychain is missing)
         mock_store.delete_secret("jki", "master_key").unwrap();
-        let key = acquire_master_key(false, &interactor, Some(&mock_store)).unwrap();
+        let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
         assert_eq!(key.expose_secret(), "file_pass");
 
         // 4. Interactive Fallback (when both missing)
         std::fs::remove_file(&key_path).unwrap();
         interactor.passwords.borrow_mut().push("interactive_fallback".to_string());
-        let key = acquire_master_key(false, &interactor, Some(&mock_store)).unwrap();
+        let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
         assert_eq!(key.expose_secret(), "interactive_fallback");
     }
 
