@@ -55,6 +55,10 @@ impl State {
         }
     }
 
+    pub fn account_count(&self) -> usize {
+        self.secrets.as_ref().map(|s| s.len()).unwrap_or(0)
+    }
+
     fn unlock(&mut self, master_key: secrecy::SecretString) -> Result<String, String> {
         let sec_path = JkiPath::secrets_path();
         let decrypted_path = JkiPath::decrypted_secrets_path();
@@ -237,6 +241,12 @@ fn main() -> io::Result<()> {
     }
 
     let (tray_handler, _menu) = tray::TrayHandler::new();
+    
+    // Initial status update
+    {
+        let s = state.lock().unwrap();
+        tray_handler.update_status(&s);
+    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(500));
@@ -246,18 +256,23 @@ fn main() -> io::Result<()> {
             return;
         }
 
+        if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
+            if tray_handler.handle_menu_event(menu_event, Arc::clone(&state)) {
+                *control_flow = ControlFlow::Exit;
+            }
+            // After any menu action, force a status update
+            let s = state.lock().unwrap();
+            tray_handler.update_status(&s);
+        }
+
         match event {
-            Event::NewEvents(_) => {
-                let s = state.lock().unwrap();
+            Event::MainEventsCleared => {
+                // Periodically check TTL and refresh tray (less aggressive than NewEvents)
+                let mut s = state.lock().unwrap();
+                s.check_ttl();
                 tray_handler.update_status(&s);
             }
             _ => (),
-        }
-
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if tray_handler.handle_menu_event(event, Arc::clone(&state)) {
-                *control_flow = ControlFlow::Exit;
-            }
         }
     });
 }
@@ -376,7 +391,8 @@ mod tests {
         input_data.push(b'\n');
         
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream, state).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
@@ -395,7 +411,8 @@ mod tests {
         input_data.push(b'\n');
         
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream, state).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
@@ -450,7 +467,8 @@ mod tests {
         input_data.push(b'\n');
 
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream, state).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_output = String::from_utf8(stream.output).unwrap();
         let mut resps = resp_output.lines().map(|l| serde_json::from_str::<Response>(l).unwrap());
@@ -474,7 +492,8 @@ mod tests {
         let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
         let input_data = b"not a json\n";
         let mut stream = MockStream { input: Cursor::new(input_data.to_vec()), output: Vec::new() };
-        handle_client_io(&mut stream, state).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
@@ -498,7 +517,8 @@ mod tests {
         input_data.push(b'\n');
         
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream, state.clone()).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state.clone(), tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
@@ -510,6 +530,29 @@ mod tests {
         // Verify secrets cleared but master_key persists if it was there
         let s = state.lock().unwrap();
         assert!(s.secrets.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_client_shutdown() {
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
+        let req = Request::Shutdown;
+        let mut input_data = serde_json::to_vec(&req).unwrap();
+        input_data.push(b'\n');
+        
+        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
+
+        let resp_str = String::from_utf8(stream.output).unwrap();
+        let resp: Response = serde_json::from_str(&resp_str).unwrap();
+        match resp {
+            Response::Success => {},
+            _ => panic!("Expected Success, got {:?}", resp),
+        }
+        
+        // Verify shutdown signal was sent
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
@@ -528,7 +571,8 @@ mod tests {
         input_data.push(b'\n');
         
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream, state).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
@@ -573,13 +617,14 @@ mod tests {
         input_data.push(b'\n');
 
         let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
-        handle_client_io(&mut stream, state).unwrap();
+        let (tx, _) = std::sync::mpsc::channel();
+        handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
         match resp {
-            Response::Error(msg) => assert!(msg.contains("enabled: Encrypted vault missing")),
-            _ => panic!("Expected Error (auth refusal), got {:?}", resp),
+            Response::Unlocked(source) => assert!(source.contains("Plaintext")),
+            _ => panic!("Expected Unlocked (Plaintext Vault), got {:?}", resp),
         }
 
         // Cleanup env

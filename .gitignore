@@ -1,6 +1,8 @@
 # Rust
 /target
 Cargo.lock
+tarpaulin-report.html
+*.profraw
 
 # Binary Cache (as per PRD V19)
 *.bin.age

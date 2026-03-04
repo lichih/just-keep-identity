@@ -458,7 +458,7 @@ mod tests {
         };
         assert!(run(cli_no_force).is_ok());
 
-        // Run with auth:agent -> should skip plaintext and use local (since no agent)
+        // Run with auth:agent -> should FAIL since agent is not running (new silence policy)
         let cli_force = Cli {
             command: None,
             patterns: vec!["google".to_string()],
@@ -469,6 +469,89 @@ mod tests {
             quiet: false,
             stdout: true,
         };
-        assert!(run(cli_force).is_ok());
+        assert!(run(cli_force).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_list_accounts() {
+        use tempfile::tempdir;
+        use std::env;
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_list");
+        fs::create_dir_all(&home).unwrap();
+        env::set_var("JKI_HOME", &home);
+
+        let metadata = MetadataFile {
+            version: 1,
+            accounts: vec![
+                Account { id: "1".to_string(), name: "A".to_string(), issuer: Some("Google".to_string()), account_type: AccountType::Standard, secret: "".to_string(), digits: 6, algorithm: "SHA1".to_string() },
+                Account { id: "2".to_string(), name: "B".to_string(), issuer: Some("Google".to_string()), account_type: AccountType::Standard, secret: "".to_string(), digits: 6, algorithm: "SHA1".to_string() },
+            ]
+        };
+        fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
+
+        let cli = Cli {
+            command: None,
+            patterns: vec!["google".to_string()],
+            auth: AuthSource::Auto,
+            interactive: false,
+            list: true, // Test listing
+            otp: false,
+            quiet: true,
+            stdout: true,
+        };
+        
+        let result = run(cli);
+        assert!(result.is_err()); // Ambiguous results return Err(1)
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_otp_only() {
+        use tempfile::tempdir;
+        use std::env;
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_otp");
+        fs::create_dir_all(&home).unwrap();
+        env::set_var("JKI_HOME", &home);
+
+        let acc_id = "test-id";
+        let metadata = MetadataFile {
+            version: 1,
+            accounts: vec![Account {
+                id: acc_id.to_string(),
+                name: "test@gmail.com".to_string(),
+                issuer: Some("Google".to_string()),
+                account_type: AccountType::Standard,
+                secret: "".to_string(),
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            }]
+        };
+        fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
+
+        // Write plaintext vault so we don't need a key
+        let mut secrets_map = HashMap::new();
+        secrets_map.insert(acc_id.to_string(), AccountSecret {
+            secret: "JBSWY3DPEHPK3PXP".to_string(),
+            digits: 6,
+            algorithm: "SHA1".to_string(),
+        });
+        fs::write(home.join("vault.secrets.json"), serde_json::to_vec(&secrets_map).unwrap()).unwrap();
+
+        let cli = Cli {
+            command: None,
+            patterns: vec!["google".to_string()],
+            auth: AuthSource::Auto,
+            interactive: false,
+            list: false,
+            otp: true, // Only OTP
+            quiet: true,
+            stdout: true,
+        };
+        
+        let result = run(cli);
+        assert!(result.is_ok());
     }
 }

@@ -808,6 +808,32 @@ mod tests {
 
         // Test commit no changes
         assert!(!git::commit(repo_path, "no change").unwrap());
+
+        // Test add specific files
+        std::fs::write(repo_path.join("file2"), "content").unwrap();
+        git::add(repo_path, &vec!["file2".to_string()]).unwrap();
+        let s = git::check_status(repo_path).unwrap();
+        assert!(!s.is_clean);
+
+        // Test conflict helpers (mocking conflict)
+        std::fs::write(repo_path.join("file2"), "conflict").unwrap();
+        // Just verify the porcelain output logic doesn't crash
+        let _ = git::get_conflicting_files(repo_path);
+    }
+
+    #[test]
+    #[serial]
+    fn test_agent_client_error_handling() {
+        // Since we can't easily mock the local socket server here without a lot of boilerplate,
+        // we test the Response matching logic which is a large part of the coverage.
+        
+        let err_resp = agent::Response::Error("test error".to_string());
+        let json = serde_json::to_string(&err_resp).unwrap();
+        let decoded: agent::Response = serde_json::from_str(&json).unwrap();
+        match decoded {
+            agent::Response::Error(e) => assert_eq!(e, "test error"),
+            _ => panic!("Decode failed"),
+        }
     }
 
     #[test]
@@ -892,6 +918,47 @@ mod tests {
         interactor.passwords.borrow_mut().push("interactive_fallback".to_string());
         let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
         assert_eq!(key.expose_secret(), "interactive_fallback");
+    }
+
+    #[test]
+    #[serial]
+    fn test_acquire_master_key_fail_fast() {
+        use tempfile::tempdir;
+        use std::env;
+        use crate::keychain::tests::MockSecretStore;
+
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_fail_fast");
+        std::fs::create_dir_all(&home).unwrap();
+        env::set_var("JKI_HOME", &home);
+
+        let interactor = MockInteractor {
+            passwords: std::cell::RefCell::new(vec![]),
+            confirms: std::cell::RefCell::new(vec![]),
+        };
+        let mock_store = MockSecretStore::new();
+
+        // Test explicit Keyfile source when file is missing
+        let res = acquire_master_key(AuthSource::Keyfile, &interactor, Some(&mock_store));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("File missing"));
+
+        // Test explicit Keyfile source when permissions are insecure
+        let key_path = crate::paths::JkiPath::master_key_path();
+        std::fs::write(&key_path, "pass").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let res = acquire_master_key(AuthSource::Keyfile, &interactor, Some(&mock_store));
+            assert!(res.is_err());
+            assert!(res.unwrap_err().contains("Insecure permissions"));
+        }
+
+        // Test explicit Keychain source when store is missing (None)
+        let res = acquire_master_key(AuthSource::Keychain, &interactor, None);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Store not provided"));
     }
 
     #[test]

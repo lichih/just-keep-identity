@@ -36,7 +36,7 @@ test-all:
 
 ## cov: Run tests and generate coverage report (HTML)
 cov:
-	cargo tarpaulin --workspace --out Html
+	CARGO_TARGET_DIR=target/tarpaulin cargo tarpaulin --workspace --out Html --skip-clean
 
 ## install: Build and deploy binaries using install.sh
 install:

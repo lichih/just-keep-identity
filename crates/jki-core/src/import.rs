@@ -91,6 +91,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_uri_with_plus_sign() {
+        // WinAuth style: '+' represents space in the path
+        let uri = "otpauth://totp/FF14+Service:user+name?secret=123";
+        let acc = parse_otpauth_uri(uri).unwrap();
+        assert_eq!(acc.name, "user name");
+        assert_eq!(acc.issuer, Some("FF14 Service".to_string()));
+    }
+
+    #[test]
     fn test_parse_invalid_uri() {
         assert!(parse_otpauth_uri("invalid").is_none());
         assert!(parse_otpauth_uri("otpauth://hotp/test?secret=123").is_none());
