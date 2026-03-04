@@ -2,3 +2,4 @@
 !data/private/
 !data/private/*.txt
 \n# Allow Gemini to read safety mirrors for diffing\n!*.stable
+prototypes/

@@ -48,3 +48,89 @@
 
 ---
 *Status: Architecture Baselined (V29 - ACL Optimized).*
+
+## **附錄 A：金庫狀態與匯入邏輯決策 (Vault State & Import Logic)**
+
+為確保安全性 (Security) 與人體工學 (UX) 的平衡，`jkim import-winauth` 遵循以下硬化後的決策矩陣。
+
+### **A.1 決策流程圖 (Decision Flow)**
+
+```mermaid
+graph TD
+    Start[jkim import] --> DetectState{偵測物理檔案}
+    
+    DetectState -- "只有 .age" --> AuthRequired{取得 Master Key?}
+    AuthRequired -- 成功 --> UpdateAge[更新並加密 .age] --> End[完成 / 0 詢問]
+    AuthRequired -- 失敗 --> ErrFailFast[報錯停止: 禁止降級]
+    
+    DetectState -- "只有 .json" --> HasKey{取得 Master Key?}
+    HasKey -- 成功 --> AskUpgrade{詢問升級加密? y/N}
+    AskUpgrade -- Y --> SaveAge[加密 .age 並刪除 .json]
+    AskUpgrade -- N --> UpdateJson[更新 .json]
+    HasKey -- 失敗 --> UpdateJson[更新 .json] --> End
+    
+    DetectState -- "初始狀態 (空)" --> HasKeyInit{取得 Master Key?}
+    HasKeyInit -- 成功 --> SaveAgeInit[直接建立加密 .age] --> End[完成 / 0 詢問]
+    HasKeyInit -- 失敗 --> AskPlain[強制詢問: 建立明文金庫? y/n]
+    AskPlain -- Y --> UpdateJsonInit[建立 .json]
+    AskPlain -- N --> Cancel[取消匯入]
+    
+    DetectState -- "有 Meta 但無 Secrets" --> ErrCorrupt[報錯停止: 金庫損壞]
+```
+
+### **A.2 職責邊界規範 (Boundaries)**
+1.  **認證優先序**：日常操作僅限 `Agent` > `Keyfile` > `Interactive`。**禁止**直接調用系統 Keychain。
+2.  **安全性不退讓**：若現狀為加密態，認證失敗時**絕對禁止**降級為明文。
+3.  **最小干擾**：在「維持加密態」或「維持明文態且無金鑰」時，執行 **0 詢問**。
+
+### **A.3 邏輯虛擬碼 (Pseudo-code)**
+
+```rust
+fn handle_import() {
+    // 1. 狀態預檢
+    let state = detect_vault_state(); // { has_age, has_json, has_meta }
+    if state.has_meta && !state.has_age && !state.has_json {
+        error("Vault corrupted: Metadata exists but secrets are missing.");
+        return;
+    }
+
+    // 2. 受限認證取得 (不傳入 Keychain Store)
+    let key = acquire_master_key(Auth::Auto, interactor, None).ok();
+
+    // 3. 核心決策分支
+    match (state.has_age, state.has_json) {
+        (true, _) => { // 加密態優先
+            let k = key.expect("Authentication required for encrypted vault.");
+            let vault = decrypt_age(path_age, k);
+            let updated = merge(vault, new_data);
+            save_age(updated, k);
+        },
+        (false, true) => { // 明文態
+            let vault = read_json(path_json);
+            let updated = merge(vault, new_data);
+            if let Some(k) = key {
+                if interactor.confirm("Master Key detected. Upgrade to Encrypted? [y/N]", false) {
+                    save_age(updated, k);
+                    delete_file(path_json);
+                } else {
+                    save_json(updated);
+                }
+            } else {
+                save_json(updated); // 0 詢問，維持明文
+            }
+        },
+        (false, false) => { // 初始狀態
+            let updated = merge(empty_vault, new_data);
+            if let Some(k) = key {
+                save_age(updated, k); // 0 詢問，自動保護
+            } else {
+                if interactor.confirm("No Key. Create as PLAINTEXT vault? [y/n]", false) {
+                    save_json(updated);
+                } else {
+                    exit("Import cancelled.");
+                }
+            }
+        }
+    }
+}
+```
