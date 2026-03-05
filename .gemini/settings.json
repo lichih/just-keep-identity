@@ -1,0 +1,14 @@
+{
+  "agents": {
+    "overrides": {
+      "generalist_agent": {
+        "enabled": false
+      }
+    }
+  },
+  "tools": {
+    "disabled": [
+      "generalist"
+    ]
+  }
+}
