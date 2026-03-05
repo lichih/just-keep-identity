@@ -1,6 +1,8 @@
 # Allow Gemini to see the decrypted data for development/importing
 !data/private/
 !data/private/*.txt
-\n# Allow Gemini to read safety mirrors for diffing\n!*.stable
-prototypes/
+
+# Allow Gemini to read safety mirrors for diffing
 !*.stable
+
+prototypes/
