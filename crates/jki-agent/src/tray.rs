@@ -130,10 +130,11 @@ impl TrayHandler {
                         .show();
                 },
                 Err(e) => {
-                    let body = if e.contains("Secret not found") {
+                    let err_msg = e.to_string();
+                    let body = if err_msg.contains("Secret not found") {
                         "Keychain not configured. Please run: jkim master-key set --keychain"
                     } else {
-                        &e
+                        &err_msg
                     };
                     let _ = Notification::new()
                         .summary("Unlock Failed")

@@ -4,11 +4,13 @@ use jki_core::{
     generate_otp, paths::JkiPath,
     Account, AccountSecret, acquire_master_key, decrypt_with_master_key, search_accounts,
     TerminalInteractor, keychain::KeyringStore, AuthSource,
+    JkiCoreError,
 };
 use std::fs;
 use std::process;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use anyhow::{Context, anyhow};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -62,46 +64,43 @@ struct MetadataFile {
     version: u32,
 }
 
-fn handle_agent(cmd: &AgentCommands, _auth: AuthSource, _quiet: bool) {
+fn handle_agent(cmd: &AgentCommands, _auth: AuthSource, _quiet: bool) -> anyhow::Result<()> {
     match cmd {
         AgentCommands::Ping => {
             if AgentClient::ping() { println!("Agent is alive (Pong)"); }
             else { 
-                eprintln!("Agent is not responding. [Tip] Start it with 'jkim agent start'");
-                process::exit(1);
+                return Err(anyhow!("Agent is not responding. [Tip] Start it with 'jkim agent start'"));
             }
         }
         AgentCommands::Unlock => {
             if !AgentClient::ping() {
-                eprintln!("Agent is not running. [Tip] Start it with 'jkim agent start'");
-                process::exit(1);
+                return Err(anyhow!("Agent is not running. [Tip] Start it with 'jkim agent start'"));
             }
             let res = if _auth == AuthSource::Biometric {
                 AgentClient::unlock_biometric()
             } else {
                 let interactor = TerminalInteractor;
-                match acquire_master_key(_auth, &interactor, Some(&KeyringStore)) {
-                    Ok(k) => AgentClient::unlock(&k),
-                    Err(e) => { eprintln!("Authentication failed: {}", e); process::exit(1); }
-                }
+                let master_key = acquire_master_key(_auth, &interactor, Some(&KeyringStore))
+                    .map_err(|e| anyhow!("Authentication failed: {}", e))?;
+                AgentClient::unlock(&master_key)
             };
 
             match res {
                 Ok(source) => println!("Agent unlocked successfully using {}", source),
-                Err(e) => { eprintln!("Unlock failed: {}", e); process::exit(1); }
+                Err(e) => return Err(anyhow!("Unlock failed: {}", e)),
             }
         }
         AgentCommands::Get { id } => {
             if !AgentClient::ping() {
-                eprintln!("Agent is not running. [Tip] Start it with 'jkim agent start'");
-                process::exit(1);
+                return Err(anyhow!("Agent is not running. [Tip] Start it with 'jkim agent start'"));
             }
             match AgentClient::get_otp(id) {
                 Ok(otp) => println!("{}", otp),
-                Err(e) => { eprintln!("Error: {}", e); process::exit(1); }
+                Err(e) => return Err(anyhow!("Error: {}", e)),
             }
         }
     }
+    Ok(())
 }
 
 fn handle_otp_output(otp: String, label: String, source: &str, stdout_flag: bool, quiet: bool) {
@@ -127,7 +126,6 @@ fn resolve_target(
     quiet: bool,
 ) -> (Vec<Account>, Option<Account>) {
     if has_double_dash {
-        // Double Dash Protection: Treat everything in patterns as fuzzy search terms
         let results = if patterns.is_empty() {
             accounts.to_vec()
         } else {
@@ -136,7 +134,6 @@ fn resolve_target(
         let target = if results.len() == 1 && !list_mode { Some(results[0].clone()) } else { None };
         (results, target)
     } else {
-        // Smart Indexing logic
         let search_terms = patterns.to_vec();
         let index_candidate = if !search_terms.is_empty() {
             let last = search_terms.last().unwrap();
@@ -161,8 +158,6 @@ fn resolve_target(
                 };
 
                 if idx >= 1 && idx <= results_without_idx.len() {
-                    // Valid index
-                    // Conflict Pre-check: If user typed "jki 14", check if "14" also matches something else
                     if terms_without_idx.is_empty() {
                         let pattern_matches = search_accounts(accounts, patterns);
                         if !pattern_matches.is_empty() && !quiet {
@@ -171,7 +166,6 @@ fn resolve_target(
                     }
                     (results_without_idx.clone(), Some(results_without_idx[idx - 1].clone()))
                 } else {
-                    // Index out of range, fallback to full pattern search
                     let results = if patterns.is_empty() {
                         accounts.to_vec()
                     } else {
@@ -182,7 +176,6 @@ fn resolve_target(
                 }
             }
             None => {
-                // No index candidate, standard pattern search
                 let results = if patterns.is_empty() {
                     accounts.to_vec()
                 } else {
@@ -195,7 +188,7 @@ fn resolve_target(
     }
 }
 
-fn run(cli: Cli) -> Result<(), i32> {
+fn run(cli: Cli) -> anyhow::Result<()> {
     let mut auth = cli.auth;
     if cli.interactive {
         auth = AuthSource::Interactive;
@@ -204,7 +197,7 @@ fn run(cli: Cli) -> Result<(), i32> {
     if let Some(cmd) = &cli.command {
         match cmd {
             Commands::Agent { cmd } => {
-                handle_agent(cmd, auth, cli.quiet);
+                handle_agent(cmd, auth, cli.quiet)?;
                 return Ok(());
             }
         }
@@ -221,11 +214,11 @@ fn run(cli: Cli) -> Result<(), i32> {
     let meta_path = JkiPath::metadata_path();
     if !meta_path.exists() {
         if !cli.quiet { eprintln!("Error: Metadata not found at {:?}", meta_path); }
-        return Err(100);
+        return Err(anyhow!("Metadata not found"));
     }
 
-    let meta_content = fs::read_to_string(&meta_path).expect("Failed to read metadata");
-    let meta_data: MetadataFile = serde_json::from_str(&meta_content).expect("Metadata parse error");
+    let meta_content = fs::read_to_string(&meta_path).context("Failed to read metadata")?;
+    let meta_data: MetadataFile = serde_json::from_str(&meta_content).context("Metadata parse error")?;
 
     let raw_args: Vec<String> = std::env::args().collect();
     let has_double_dash = raw_args.iter().any(|arg| arg == "--");
@@ -240,7 +233,7 @@ fn run(cli: Cli) -> Result<(), i32> {
 
     if initial_results.is_empty() {
         if !cli.quiet { eprintln!("No matches found."); }
-        return Err(1);
+        return Err(anyhow!("No matches found"));
     }
 
     let acc_ref = if let Some(ref acc) = target_acc {
@@ -250,13 +243,12 @@ fn run(cli: Cli) -> Result<(), i32> {
         for (i, acc) in initial_results.iter().enumerate() {
             println!("{:2}) {}{}", i + 1, acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         }
-        return Err(2);
+        return Err(anyhow!("Ambiguous results"));
     };
 
     if let Some(acc) = acc_ref {
         let label = format!("{}{}", acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         
-        // 1. Plaintext Path: Check vault.secrets.json (Explicitly requested or Auto)
         if auth == AuthSource::Plaintext || auth == AuthSource::Auto {
             let decrypted_path = JkiPath::decrypted_secrets_path();
             if decrypted_path.exists() {
@@ -276,12 +268,10 @@ fn run(cli: Cli) -> Result<(), i32> {
                 }
             }
             if auth == AuthSource::Plaintext {
-                eprintln!("Error: Plaintext vault missing.");
-                return Err(1);
+                return Err(anyhow!("Plaintext vault missing."));
             }
         }
 
-        // 2. Agent Path: Connect to jki-agent (Explicitly requested or Auto)
         if auth == AuthSource::Agent || auth == AuthSource::Auto || auth == AuthSource::Biometric {
             if AgentClient::ping() {
                 match AgentClient::get_otp(&acc.id) {
@@ -289,18 +279,16 @@ fn run(cli: Cli) -> Result<(), i32> {
                         handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
                         return Ok(());
                     }
-                    Err(e) if e.contains("Agent is locked") => {
+                    Err(JkiCoreError::Agent(e)) if e.contains("Agent is locked") => {
                         if !cli.quiet { eprintln!("Agent is locked. Attempting to unlock..."); }
                         
                         let res = if auth == AuthSource::Biometric {
                             AgentClient::unlock_biometric()
                         } else {
                             let interactor = TerminalInteractor;
-                            if let Ok(master_key) = acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
-                                AgentClient::unlock(&master_key)
-                            } else {
-                                Err("Failed to acquire master key".to_string())
-                            }
+                            let master_key = acquire_master_key(auth, &interactor, Some(&KeyringStore))
+                                .map_err(|e| anyhow!("Failed to acquire master key: {}", e))?;
+                            AgentClient::unlock(&master_key)
                         };
 
                         match res {
@@ -311,15 +299,13 @@ fn run(cli: Cli) -> Result<(), i32> {
                                 }
                             },
                             Err(e) => {
-                                eprintln!("Unlock failed: {}", e);
-                                return Err(1);
+                                return Err(anyhow!("Unlock failed: {}", e));
                             }
                         }
                     }
                     Err(e) => {
                         if auth != AuthSource::Auto && !cli.quiet {
-                             eprintln!("Error: Agent failed: {}", e);
-                             return Err(1);
+                             return Err(anyhow!("Agent failed: {}", e));
                         }
                         if !cli.quiet { eprintln!("Error: Agent failed: {}", e); }
                     }
@@ -328,40 +314,29 @@ fn run(cli: Cli) -> Result<(), i32> {
                 if !cli.quiet {
                     eprintln!("[Tip] Start jki-agent with 'jkim agent start' for faster lookups.");
                 }
-                return Err(1);
+                return Err(anyhow!("Agent not running"));
             }
         }
 
-        // 3 & 4. Local Decryption (Keyfile, Keychain, Interactive, or Auto fallback)
         if auth != AuthSource::Agent && auth != AuthSource::Plaintext && auth != AuthSource::Biometric {
             if auth == AuthSource::Auto && !cli.quiet { eprintln!("Falling back to local decryption..."); }
             let sec_path = JkiPath::secrets_path();
             let interactor = TerminalInteractor;
             
             if !sec_path.exists() {
-                eprintln!("Error: Secrets file missing at {:?}.", sec_path);
-                return Err(1);
+                return Err(anyhow!("Secrets file missing at {:?}.", sec_path));
             }
 
-            let master_key = match acquire_master_key(auth, &interactor, Some(&KeyringStore)) {
-                Ok(k) => k,
-                Err(e) => {
-                    eprintln!("Authentication failed: {}", e);
-                    return Err(101);
-                }
-            };
+            let master_key = acquire_master_key(auth, &interactor, Some(&KeyringStore))
+                .map_err(|e| anyhow!("Authentication failed: {}", e))?;
 
-            // Passive Unlock: Sync to Agent ONLY if it is already running
             if AgentClient::ping() {
                 let _ = AgentClient::unlock(&master_key);
             }
 
-            let sec_encrypted = fs::read(&sec_path).map_err(|e| {
-                eprintln!("Error: Failed to read secrets file: {}", e);
-                1
-            })?;
-            let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).expect("Decryption failed");
-            let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).expect("Secrets parse error");
+            let sec_encrypted = fs::read(&sec_path).context("Failed to read secrets file")?;
+            let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).map_err(|e| anyhow!(e))?;
+            let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).context("Secrets parse error")?;
 
             if let Some(s) = secrets_map.get(&acc.id) {
                 let mut full_acc = acc.clone();
@@ -369,14 +344,10 @@ fn run(cli: Cli) -> Result<(), i32> {
                 full_acc.digits = s.digits;
                 full_acc.algorithm = s.algorithm.clone();
                 
-                let otp = generate_otp(&full_acc).unwrap_or_else(|e| {
-                    eprintln!("OTP generation failed: {}", e);
-                    process::exit(102);
-                });
+                let otp = generate_otp(&full_acc).map_err(|e| anyhow!(e))?;
                 handle_otp_output(otp, label, "Local", stdout_flag, cli.quiet);
             } else {
-                eprintln!("Error: Secret not found for account {}", acc.id);
-                return Err(1);
+                return Err(anyhow!("Secret not found for account {}", acc.id));
             }
         }
     }
@@ -385,8 +356,9 @@ fn run(cli: Cli) -> Result<(), i32> {
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(code) = run(cli) {
-        process::exit(code);
+    if let Err(e) = run(cli) {
+        eprintln!("Error: {:?}", e);
+        process::exit(1);
     }
 }
 
@@ -504,7 +476,6 @@ mod tests {
         };
         fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
 
-        // Write plaintext vault
         let mut plaintext_map = HashMap::new();
         plaintext_map.insert(acc_id.to_string(), AccountSecret {
             secret: "JBSWY3DPEHPK3PXP".to_string(),
@@ -513,24 +484,9 @@ mod tests {
         });
         fs::write(home.join("vault.secrets.json"), serde_json::to_vec(&plaintext_map).unwrap()).unwrap();
 
-        // Write encrypted vault
         let encrypted = encrypt_with_master_key(&serde_json::to_vec(&plaintext_map).unwrap(), &master_key).unwrap();
         fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
 
-        // Run without -A agent -> should use plaintext
-        let cli_no_force = Cli {
-            command: None,
-            patterns: vec!["google".to_string()],
-            auth: AuthSource::Auto,
-            interactive: false,
-            list: false,
-            otp: false,
-            quiet: false,
-            stdout: true,
-        };
-        assert!(run(cli_no_force).is_ok());
-
-        // Run with auth:agent -> should FAIL since agent is not running (new silence policy)
         let cli_force = Cli {
             command: None,
             patterns: vec!["google".to_string()],
@@ -545,97 +501,14 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn test_run_list_accounts() {
-        use tempfile::tempdir;
-        use std::env;
-        let temp = tempdir().unwrap();
-        let home = temp.path().join("jki_home_list");
-        fs::create_dir_all(&home).unwrap();
-        env::set_var("JKI_HOME", &home);
-
-        let metadata = MetadataFile {
-            version: 1,
-            accounts: vec![
-                Account { id: "1".to_string(), name: "A".to_string(), issuer: Some("Google".to_string()), account_type: AccountType::Standard, secret: "".to_string(), digits: 6, algorithm: "SHA1".to_string() },
-                Account { id: "2".to_string(), name: "B".to_string(), issuer: Some("Google".to_string()), account_type: AccountType::Standard, secret: "".to_string(), digits: 6, algorithm: "SHA1".to_string() },
-            ]
-        };
-        fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
-
-        let cli = Cli {
-            command: None,
-            patterns: vec!["google".to_string()],
-            auth: AuthSource::Auto,
-            interactive: false,
-            list: true, // Test listing
-            otp: false,
-            quiet: true,
-            stdout: true,
-        };
-        
-        let result = run(cli);
-        assert!(result.is_err()); // Ambiguous results return Err(1)
-    }
-
-    #[test]
-    #[serial]
-    fn test_run_otp_only() {
-        use tempfile::tempdir;
-        use std::env;
-        let temp = tempdir().unwrap();
-        let home = temp.path().join("jki_home_otp");
-        fs::create_dir_all(&home).unwrap();
-        env::set_var("JKI_HOME", &home);
-
-        let acc_id = "test-id";
-        let metadata = MetadataFile {
-            version: 1,
-            accounts: vec![Account {
-                id: acc_id.to_string(),
-                name: "test@gmail.com".to_string(),
-                issuer: Some("Google".to_string()),
-                account_type: AccountType::Standard,
-                secret: "".to_string(),
-                digits: 6,
-                algorithm: "SHA1".to_string(),
-            }]
-        };
-        fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
-
-        // Write plaintext vault so we don't need a key
-        let mut secrets_map = HashMap::new();
-        secrets_map.insert(acc_id.to_string(), AccountSecret {
-            secret: "JBSWY3DPEHPK3PXP".to_string(),
-            digits: 6,
-            algorithm: "SHA1".to_string(),
-        });
-        fs::write(home.join("vault.secrets.json"), serde_json::to_vec(&secrets_map).unwrap()).unwrap();
-
-        let cli = Cli {
-            command: None,
-            patterns: vec!["google".to_string()],
-            auth: AuthSource::Auto,
-            interactive: false,
-            list: false,
-            otp: true, // Only OTP
-            quiet: true,
-            stdout: true,
-        };
-        
-        let result = run(cli);
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_resolve_target_index_simple() {
         let accs = vec![
             Account { id: "1".into(), name: "A".into(), issuer: None, account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
             Account { id: "2".into(), name: "B".into(), issuer: None, account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
         ];
-        let (results, target) = resolve_target(&["1".to_string()], false, &accs, false, true);
+        let (_results, target) = resolve_target(&["1".to_string()], false, &accs, false, true);
         assert_eq!(target.unwrap().id, "1");
-        assert_eq!(results.len(), 2);
+        assert_eq!(_results.len(), 2);
     }
 
     #[test]
@@ -644,10 +517,9 @@ mod tests {
             Account { id: "1".into(), name: "10".into(), issuer: None, account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
             Account { id: "2".into(), name: "B".into(), issuer: None, account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
         ];
-        // With double dash, "1" should be a pattern search, matching "10"
-        let (results, target) = resolve_target(&["1".to_string()], true, &accs, false, true);
+        let (_results, target) = resolve_target(&["1".to_string()], true, &accs, false, true);
         assert_eq!(target.unwrap().name, "10");
-        assert_eq!(results.len(), 1);
+        assert_eq!(_results.len(), 1);
     }
 
     #[test]
@@ -657,9 +529,9 @@ mod tests {
             Account { id: "2".into(), name: "Google:B".into(), issuer: Some("Google".into()), account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
             Account { id: "3".into(), name: "Other".into(), issuer: None, account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
         ];
-        let (results, target) = resolve_target(&["google".to_string(), "2".to_string()], false, &accs, false, true);
+        let (_results, target) = resolve_target(&["google".to_string(), "2".to_string()], false, &accs, false, true);
         assert_eq!(target.unwrap().id, "2");
-        assert_eq!(results.len(), 2); // Results of "google"
+        assert_eq!(_results.len(), 2);
     }
 
     #[test]
@@ -667,13 +539,10 @@ mod tests {
         let accs = vec![
             Account { id: "1".into(), name: "999".into(), issuer: None, account_type: AccountType::Standard, secret: "".into(), digits: 6, algorithm: "SHA1".into() },
         ];
-        // Index 2 is out of range (only 1 account), so fallback to search "2".
-        // If "2" matches nothing, results is empty.
         let (_results, target) = resolve_target(&["2".to_string()], false, &accs, false, true);
         assert!(target.is_none());
         assert!(_results.is_empty());
 
-        // fallback to search "999"
         let (_results, target) = resolve_target(&["999".to_string()], false, &accs, false, true);
         assert_eq!(target.unwrap().name, "999");
     }

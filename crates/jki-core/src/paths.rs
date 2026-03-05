@@ -53,14 +53,14 @@ impl JkiPath {
             .unwrap_or_else(|_| Self::home_dir().join("jki.sock"))
     }
 
-    pub fn check_secure_permissions(path: &PathBuf) -> Result<(), String> {
-        if !path.exists() { return Err("File does not exist".to_string()); }
+    pub fn check_secure_permissions(path: &PathBuf) -> crate::Result<()> {
+        if !path.exists() { return Err(crate::JkiCoreError::Path("File does not exist".to_string())); }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(path).map_err(|e| e.to_string())?.permissions().mode() & 0o777;
+            let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
             if mode != 0o600 {
-                return Err(format!("Insecure permissions: {:o}. Expected 0600.", mode));
+                return Err(crate::JkiCoreError::Path(format!("Insecure permissions: {:o}. Expected 0600.", mode)));
             }
         }
         Ok(())

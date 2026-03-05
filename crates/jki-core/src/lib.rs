@@ -66,6 +66,34 @@ pub struct AccountSecret {
 
 use std::collections::HashMap;
 
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum JkiCoreError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    SerdeJson(#[from] serde_json::Error),
+    #[error("Encryption error: {0}")]
+    Encrypt(String),
+    #[error("Decryption error: {0}")]
+    Decrypt(String),
+    #[error("OTP generation error: {0}")]
+    Otp(String),
+    #[error("Authentication failed: {0}")]
+    Auth(String),
+    #[error("Agent error: {0}")]
+    Agent(String),
+    #[error("Git error: {0}")]
+    Git(String),
+    #[error("Path error: {0}")]
+    Path(String),
+    #[error("Keyring error: {0}")]
+    Keyring(String),
+}
+
+pub type Result<T> = std::result::Result<T, JkiCoreError>;
+
 pub fn integrate_accounts(metadata: Vec<Account>, secrets: &HashMap<String, AccountSecret>) -> (Vec<Account>, Vec<String>) {
     let mut integrated = Vec::new();
     let mut missing = Vec::new();
@@ -84,9 +112,9 @@ pub fn integrate_accounts(metadata: Vec<Account>, secrets: &HashMap<String, Acco
 
 use totp_rs::{Algorithm, TOTP, Secret};
 
-pub fn generate_otp(acc: &Account) -> Result<String, String> {
+pub fn generate_otp(acc: &Account) -> Result<String> {
     let secret_str = acc.secret.trim().replace(" ", "");
-    let secret = Secret::Encoded(secret_str).to_bytes().map_err(|e| e.to_string())?;
+    let secret = Secret::Encoded(secret_str).to_bytes().map_err(|e| JkiCoreError::Otp(e.to_string()))?;
     
     // 使用 new_unchecked 繞過 RFC 對長度的強硬要求 (128 bits)
     let totp = TOTP::new_unchecked(
@@ -97,28 +125,28 @@ pub fn generate_otp(acc: &Account) -> Result<String, String> {
         secret
     );
     
-    Ok(totp.generate_current().unwrap())
+    totp.generate_current().map_err(|e| JkiCoreError::Otp(e.to_string()))
 }
 
 // --- 加解密核心 ---
 
-pub fn encrypt_with_master_key(data: &[u8], master_key: &SecretString) -> Result<Vec<u8>, String> {
+pub fn encrypt_with_master_key(data: &[u8], master_key: &SecretString) -> Result<Vec<u8>> {
     let encryptor = age::Encryptor::with_user_passphrase(master_key.clone());
     let mut encrypted = vec![];
-    let mut writer = encryptor.wrap_output(&mut encrypted).map_err(|e| e.to_string())?;
-    writer.write_all(data).map_err(|e| e.to_string())?;
-    writer.finish().map_err(|e| e.to_string())?;
+    let mut writer = encryptor.wrap_output(&mut encrypted).map_err(|e| JkiCoreError::Encrypt(e.to_string()))?;
+    writer.write_all(data)?;
+    writer.finish().map_err(|e| JkiCoreError::Encrypt(e.to_string()))?;
     Ok(encrypted)
 }
 
-pub fn decrypt_with_master_key(encrypted_data: &[u8], master_key: &SecretString) -> Result<Vec<u8>, String> {
-    let decryptor = match age::Decryptor::new(encrypted_data).map_err(|e| e.to_string())? {
+pub fn decrypt_with_master_key(encrypted_data: &[u8], master_key: &SecretString) -> Result<Vec<u8>> {
+    let decryptor = match age::Decryptor::new(encrypted_data).map_err(|e| JkiCoreError::Decrypt(e.to_string()))? {
         age::Decryptor::Passphrase(d) => d,
-        _ => return Err("Expected passphrase-encrypted data".to_string()),
+        _ => return Err(JkiCoreError::Decrypt("Expected passphrase-encrypted data".to_string())),
     };
-    let mut reader = decryptor.decrypt(master_key, None).map_err(|e| e.to_string())?;
+    let mut reader = decryptor.decrypt(master_key, None).map_err(|e| JkiCoreError::Decrypt(e.to_string()))?;
     let mut decrypted = vec![];
-    reader.read_to_end(&mut decrypted).map_err(|e| e.to_string())?;
+    reader.read_to_end(&mut decrypted)?;
     Ok(decrypted)
 }
 
@@ -155,14 +183,14 @@ pub fn search_accounts(accounts: &[Account], patterns: &[String]) -> Vec<Account
 // --- 互動抽象 (用於 Mock 測試) ---
 
 pub trait Interactor {
-    fn prompt_password(&self, prompt: &str) -> Result<SecretString, String>;
+    fn prompt_password(&self, prompt: &str) -> Result<SecretString>;
     fn confirm(&self, prompt: &str, default: bool) -> bool;
 }
 
 pub struct TerminalInteractor;
 
 impl Interactor for TerminalInteractor {
-    fn prompt_password(&self, prompt: &str) -> Result<SecretString, String> {
+    fn prompt_password(&self, prompt: &str) -> Result<SecretString> {
         use crossterm::{
             event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
             terminal::{disable_raw_mode, enable_raw_mode},
@@ -172,38 +200,43 @@ impl Interactor for TerminalInteractor {
 
         if !atty::is(atty::Stream::Stdin) {
             let mut line = String::new();
-            io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+            io::stdin().read_line(&mut line)?;
             return Ok(SecretString::from(line.trim().to_string()));
         }
 
-        enable_raw_mode().map_err(|e| e.to_string())?;
+        enable_raw_mode()?;
         let mut stderr = io::stderr();
         execute!(stderr, Print(format!("{}: [ ", prompt)), cursor::SavePosition, Print("_ ]"), cursor::RestorePosition).ok();
-        stderr.flush().ok();
+        let _ = stderr.flush();
 
         let mut password = String::new();
         let mut toggle = false;
 
         let result = loop {
-            if let Ok(Event::Key(KeyEvent { code, modifiers, .. })) = event::read() {
-                match code {
-                    KeyCode::Enter => {
-                        execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\r\n")).ok();
-                        break Ok(SecretString::from(password));
+            match event::read() {
+                Ok(Event::Key(KeyEvent { code, modifiers, .. })) => {
+                    match code {
+                        KeyCode::Enter => {
+                            execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\r\n")).ok();
+                            break Ok(SecretString::from(password));
+                        }
+                        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\r\nCancelled\r\n")).ok();
+                            break Err(JkiCoreError::Auth("Interrupted".to_string()));
+                        }
+                        KeyCode::Char(c) => { password.push(c); toggle = !toggle; }
+                        KeyCode::Backspace => { if !password.is_empty() { password.pop(); toggle = !toggle; } }
+                        _ => continue,
                     }
-                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                        execute!(stderr, cursor::RestorePosition, cursor::MoveRight(2), Print("\r\nCancelled\r\n")).ok();
-                        break Err("Interrupted".to_string());
-                    }                    KeyCode::Char(c) => { password.push(c); toggle = !toggle; }
-                    KeyCode::Backspace => { if !password.is_empty() { password.pop(); toggle = !toggle; } }
-                    _ => continue,
+                    let symbol = if password.is_empty() { "_" } else if toggle { "*" } else { "x" };
+                    execute!(stderr, cursor::RestorePosition, Print(symbol), cursor::RestorePosition).ok();
+                    let _ = stderr.flush();
                 }
-                let symbol = if password.is_empty() { "_" } else if toggle { "*" } else { "x" };
-                execute!(stderr, cursor::RestorePosition, Print(symbol), cursor::RestorePosition).ok();
-                stderr.flush().ok();
+                Err(e) => break Err(JkiCoreError::Io(e)),
+                _ => continue,
             }
         };
-        disable_raw_mode().ok();
+        let _ = disable_raw_mode();
         result
     }
 
@@ -211,9 +244,11 @@ impl Interactor for TerminalInteractor {
         use std::io::{self, Write};
         let options = if default { "[Y/n]" } else { "[y/N]" };
         print!("{} {}: ", prompt, options);
-        io::stdout().flush().unwrap();
+        let _ = io::stdout().flush();
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        if io::stdin().read_line(&mut input).is_err() {
+            return default;
+        }
         let input = input.trim().to_lowercase();
         if input.is_empty() {
             return default;
@@ -228,9 +263,9 @@ pub struct MockInteractor {
 }
 
 impl Interactor for MockInteractor {
-    fn prompt_password(&self, _prompt: &str) -> Result<SecretString, String> {
+    fn prompt_password(&self, _prompt: &str) -> Result<SecretString> {
         if self.passwords.borrow().is_empty() {
-            return Err("No mock password provided".to_string());
+            return Err(JkiCoreError::Auth("No mock password provided".to_string()));
         }
         Ok(SecretString::from(self.passwords.borrow_mut().remove(0)))
     }
@@ -260,7 +295,7 @@ pub fn acquire_master_key(
     source: AuthSource,
     interactor: &dyn Interactor,
     secret_store: Option<&dyn keychain::SecretStore>,
-) -> Result<SecretString, String> {
+) -> Result<SecretString> {
     use crate::paths::JkiPath;
 
     match source {
@@ -282,7 +317,7 @@ pub fn acquire_master_key(
             let key_path = JkiPath::master_key_path();
             if key_path.exists() {
                 if JkiPath::check_secure_permissions(&key_path).is_ok() {
-                    let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
+                    let content = std::fs::read_to_string(key_path)?;
                     return Ok(SecretString::from(content.trim().to_string()));
                 }
             }
@@ -291,7 +326,7 @@ pub fn acquire_master_key(
             interactor.prompt_password("Enter Master Key")
         }
         AuthSource::Agent => {
-            agent::AgentClient::get_master_key().map_err(|e| format!("Agent auth failed: {}", e))
+            agent::AgentClient::get_master_key().map_err(|e| JkiCoreError::Auth(format!("Agent auth failed: {}", e)))
         }
         AuthSource::Interactive => {
             interactor.prompt_password("Enter Master Key")
@@ -299,35 +334,34 @@ pub fn acquire_master_key(
         AuthSource::Keyfile => {
             let key_path = JkiPath::master_key_path();
             if key_path.exists() {
-                if JkiPath::check_secure_permissions(&key_path).is_ok() {
-                    let content = std::fs::read_to_string(key_path).map_err(|e| e.to_string())?;
-                    return Ok(SecretString::from(content.trim().to_string()));
-                } else {
-                    return Err("Keyfile auth failed: Insecure permissions".to_string());
+                if let Err(e) = JkiPath::check_secure_permissions(&key_path) {
+                     return Err(JkiCoreError::Auth(format!("Keyfile auth failed: {}", e)));
                 }
+                let content = std::fs::read_to_string(key_path)?;
+                return Ok(SecretString::from(content.trim().to_string()));
             }
-            Err("Keyfile auth failed: File missing".to_string())
+            Err(JkiCoreError::Auth("Keyfile auth failed: File missing".to_string()))
         }
         AuthSource::Keychain => {
             #[cfg(feature = "keychain")]
             {
                 if let Some(store) = secret_store {
-                    store.get_secret("jki", "master_key").map_err(|e| format!("Keychain auth failed: {}", e))
+                    store.get_secret("jki", "master_key").map_err(|e| JkiCoreError::Auth(format!("Keychain auth failed: {}", e)))
                 } else {
-                    Err("Keychain auth failed: Store not provided".to_string())
+                    Err(JkiCoreError::Auth("Keychain auth failed: Store not provided".to_string()))
                 }
             }
             #[cfg(not(feature = "keychain"))]
             {
-                Err("Keychain support not compiled in".to_string())
+                Err(JkiCoreError::Auth("Keychain support not compiled in".to_string()))
             }
         }
         AuthSource::Biometric => {
             // For biometric, we always try agent first as it's the primary gateway.
-            agent::AgentClient::get_master_key().map_err(|e| format!("Biometric (Agent) auth failed: {}", e))
+            agent::AgentClient::get_master_key().map_err(|e| JkiCoreError::Auth(format!("Biometric (Agent) auth failed: {}", e)))
         }
         AuthSource::Plaintext => {
-            Err("Plaintext auth source not applicable for master key acquisition".to_string())
+            Err(JkiCoreError::Auth("Plaintext auth source not applicable for master key acquisition".to_string()))
         }
     }
 }
@@ -339,7 +373,7 @@ pub fn ensure_agent_running(quiet: bool) -> bool {
 
     let socket_path = JkiPath::agent_socket_path();
     if socket_path.exists() {
-        if let Ok(_) = LocalSocketStream::connect(socket_path.to_str().unwrap()) {
+        if let Ok(_) = LocalSocketStream::connect(socket_path.to_str().unwrap_or_default()) {
             return true;
         }
         if !cfg!(windows) {
@@ -349,8 +383,14 @@ pub fn ensure_agent_running(quiet: bool) -> bool {
 
     if !quiet { eprintln!("Starting jki-agent..."); }
     
-    let current_exe = std::env::current_exe().expect("Failed to get current exe");
-    let mut agent_exe = current_exe.parent().unwrap().join("jki-agent");
+    let current_exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return false,
+    };
+    let mut agent_exe = match current_exe.parent() {
+        Some(p) => p.join("jki-agent"),
+        None => return false,
+    };
     
     // Handle cargo test/run where binaries might be in the parent directory of 'deps'
     if !agent_exe.exists() {
@@ -390,6 +430,7 @@ pub mod agent {
     use interprocess::local_socket::LocalSocketStream;
     use crate::paths::JkiPath;
     use secrecy::{SecretString, ExposeSecret};
+    use crate::JkiCoreError;
 
     #[derive(Serialize, Deserialize, Debug)]
     pub enum Request {
@@ -415,22 +456,22 @@ pub mod agent {
     pub struct AgentClient;
 
     impl AgentClient {
-        fn connect() -> Result<LocalSocketStream, String> {
+        fn connect() -> Result<LocalSocketStream, JkiCoreError> {
             let socket_path = JkiPath::agent_socket_path();
-            let name = socket_path.to_str().ok_or("Invalid socket path")?;
-            LocalSocketStream::connect(name).map_err(|e| e.to_string())
+            let name = socket_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid socket path".to_string()))?;
+            LocalSocketStream::connect(name).map_err(|e| JkiCoreError::Agent(e.to_string()))
         }
 
-        fn call(req: Request) -> Result<Response, String> {
+        fn call(req: Request) -> Result<Response, JkiCoreError> {
             let mut stream = Self::connect()?;
-            let req_json = serde_json::to_string(&req).map_err(|e| e.to_string())?;
-            stream.write_all(format!("{}\n", req_json).as_bytes()).map_err(|e| e.to_string())?;
-            stream.flush().map_err(|e| e.to_string())?;
+            let req_json = serde_json::to_string(&req)?;
+            stream.write_all(format!("{}\n", req_json).as_bytes())?;
+            stream.flush()?;
 
             let mut line = String::new();
             let mut reader = BufReader::new(stream);
-            reader.read_line(&mut line).map_err(|e| e.to_string())?;
-            serde_json::from_str(&line).map_err(|e| e.to_string())
+            reader.read_line(&mut line)?;
+            serde_json::from_str(&line).map_err(|e| JkiCoreError::SerdeJson(e))
         }
 
         pub fn ping() -> bool {
@@ -440,52 +481,52 @@ pub mod agent {
             }
         }
 
-        pub fn shutdown() -> Result<(), String> {
+        pub fn shutdown() -> Result<(), JkiCoreError> {
             match Self::call(Request::Shutdown) {
                 Ok(Response::Success) => Ok(()),
-                Ok(Response::Error(e)) => Err(e),
+                Ok(Response::Error(e)) => Err(JkiCoreError::Agent(e)),
                 Err(e) => Err(e),
-                _ => Err("Unexpected response".to_string()),
+                _ => Err(JkiCoreError::Agent("Unexpected response".to_string())),
             }
         }
 
-        pub fn unlock(master_key: &SecretString) -> Result<String, String> {
+        pub fn unlock(master_key: &SecretString) -> Result<String, JkiCoreError> {
             match Self::call(Request::Unlock { master_key: master_key.expose_secret().clone() }) {
                 Ok(Response::Unlocked(source)) => Ok(source),
-                Ok(Response::Error(e)) => Err(e),
-                _ => Err("Invalid agent response".to_string()),
+                Ok(Response::Error(e)) => Err(JkiCoreError::Agent(e)),
+                _ => Err(JkiCoreError::Agent("Invalid agent response".to_string())),
             }
         }
 
-        pub fn unlock_biometric() -> Result<String, String> {
+        pub fn unlock_biometric() -> Result<String, JkiCoreError> {
             match Self::call(Request::UnlockBiometric) {
                 Ok(Response::Unlocked(source)) => Ok(source),
-                Ok(Response::Error(e)) => Err(e),
-                _ => Err("Invalid agent response".to_string()),
+                Ok(Response::Error(e)) => Err(JkiCoreError::Agent(e)),
+                _ => Err(JkiCoreError::Agent("Invalid agent response".to_string())),
             }
         }
 
-        pub fn get_otp(account_id: &str) -> Result<String, String> {
+        pub fn get_otp(account_id: &str) -> Result<String, JkiCoreError> {
             match Self::call(Request::GetOTP { account_id: account_id.to_string() }) {
                 Ok(Response::OTP(otp)) => Ok(otp),
-                Ok(Response::Error(e)) => Err(e),
-                _ => Err("Invalid agent response".to_string()),
+                Ok(Response::Error(e)) => Err(JkiCoreError::Agent(e)),
+                _ => Err(JkiCoreError::Agent("Invalid agent response".to_string())),
             }
         }
 
-        pub fn get_master_key() -> Result<SecretString, String> {
+        pub fn get_master_key() -> Result<SecretString, JkiCoreError> {
             match Self::call(Request::GetMasterKey) {
                 Ok(Response::MasterKey(key)) => Ok(SecretString::from(key)),
-                Ok(Response::Error(e)) => Err(e),
-                _ => Err("Agent is locked".to_string()),
+                Ok(Response::Error(e)) => Err(JkiCoreError::Agent(e)),
+                _ => Err(JkiCoreError::Agent("Agent is locked".to_string())),
             }
         }
 
-        pub fn reload() -> Result<(), String> {
+        pub fn reload() -> Result<(), JkiCoreError> {
             match Self::call(Request::Reload) {
                 Ok(Response::Success) => Ok(()),
-                Ok(Response::Error(e)) => Err(e),
-                _ => Err("Invalid agent response".to_string()),
+                Ok(Response::Error(e)) => Err(JkiCoreError::Agent(e)),
+                _ => Err(JkiCoreError::Agent("Invalid agent response".to_string())),
             }
         }
     }
@@ -494,6 +535,7 @@ pub mod agent {
 pub mod git {
     use std::process::Command;
     use std::path::Path;
+    use crate::JkiCoreError;
 
     pub struct GitRepoStatus {
         pub branch: String,
@@ -524,142 +566,133 @@ pub mod git {
         })
     }
 
-    pub fn add_all(repo_path: &Path) -> Result<(), String> {
+    pub fn add_all(repo_path: &Path) -> Result<(), JkiCoreError> {
         let status = Command::new("git")
-            .args(["-C", repo_path.to_str().ok_or("Invalid path")?, "add", "."])
-            .status()
-            .map_err(|e| e.to_string())?;
+            .args(["-C", repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?, "add", "."])
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git add failed".to_string())
+            Err(JkiCoreError::Git("git add failed".to_string()))
         }
     }
 
-    pub fn add(repo_path: &Path, files: &[String]) -> Result<(), String> {
+    pub fn add(repo_path: &Path, files: &[String]) -> Result<(), JkiCoreError> {
         if files.is_empty() { return Ok(()); }
-        let mut args = vec!["-C", repo_path.to_str().ok_or("Invalid path")?, "add", "--"];
+        let mut args = vec!["-C", repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?, "add", "--"];
         for f in files {
             args.push(f);
         }
         let status = Command::new("git")
             .args(args)
-            .status()
-            .map_err(|e| e.to_string())?;
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git add failed".to_string())
+            Err(JkiCoreError::Git("git add failed".to_string()))
         }
     }
 
-    pub fn commit(repo_path: &Path, message: &str) -> Result<bool, String> {
+    pub fn commit(repo_path: &Path, message: &str) -> Result<bool, JkiCoreError> {
         let status = Command::new("git")
             .args([
                 "-C",
-                repo_path.to_str().ok_or("Invalid path")?,
+                repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?,
                 "commit",
                 "-m",
                 message,
             ])
-            .status()
-            .map_err(|e| e.to_string())?;
+            .status()?;
         Ok(status.success())
     }
 
-    pub fn pull_rebase(repo_path: &Path) -> Result<(), String> {
+    pub fn pull_rebase(repo_path: &Path) -> Result<(), JkiCoreError> {
         let status = Command::new("git")
             .args([
                 "-C",
-                repo_path.to_str().ok_or("Invalid path")?,
+                repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?,
                 "pull",
                 "--rebase",
             ])
-            .status()
-            .map_err(|e| e.to_string())?;
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git pull --rebase failed".to_string())
+            Err(JkiCoreError::Git("git pull --rebase failed".to_string()))
         }
     }
 
-    pub fn get_conflicting_files(repo_path: &Path) -> Result<Vec<String>, String> {
+    pub fn get_conflicting_files(repo_path: &Path) -> Result<Vec<String>, JkiCoreError> {
         let output = Command::new("git")
             .args([
                 "-C",
-                repo_path.to_str().ok_or("Invalid path")?,
+                repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?,
                 "diff",
                 "--name-only",
                 "--diff-filter=U",
             ])
-            .output()
-            .map_err(|e| e.to_string())?;
+            .output()?;
         let s = String::from_utf8_lossy(&output.stdout);
         Ok(s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
     }
 
-    pub fn checkout_theirs(repo_path: &Path, files: &[String]) -> Result<(), String> {
+    pub fn checkout_theirs(repo_path: &Path, files: &[String]) -> Result<(), JkiCoreError> {
         if files.is_empty() { return Ok(()); }
-        let mut args = vec!["-C", repo_path.to_str().ok_or("Invalid path")?, "checkout", "--theirs", "--"];
+        let mut args = vec!["-C", repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?, "checkout", "--theirs", "--"];
         for f in files {
             args.push(f);
         }
         let status = Command::new("git")
             .args(args)
-            .status()
-            .map_err(|e| e.to_string())?;
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git checkout --theirs failed".to_string())
+            Err(JkiCoreError::Git("git checkout --theirs failed".to_string()))
         }
     }
 
-    pub fn rebase_continue(repo_path: &Path) -> Result<(), String> {
+    pub fn rebase_continue(repo_path: &Path) -> Result<(), JkiCoreError> {
         let status = Command::new("git")
             .args([
                 "-C",
-                repo_path.to_str().ok_or("Invalid path")?,
+                repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?,
                 "rebase",
                 "--continue",
             ])
             .env("GIT_EDITOR", "true") // Skip editor for commit message
-            .status()
-            .map_err(|e| e.to_string())?;
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git rebase --continue failed".to_string())
+            Err(JkiCoreError::Git("git rebase --continue failed".to_string()))
         }
     }
 
-    pub fn rebase_abort(repo_path: &Path) -> Result<(), String> {
+    pub fn rebase_abort(repo_path: &Path) -> Result<(), JkiCoreError> {
         let status = Command::new("git")
             .args([
                 "-C",
-                repo_path.to_str().ok_or("Invalid path")?,
+                repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?,
                 "rebase",
                 "--abort",
             ])
-            .status()
-            .map_err(|e| e.to_string())?;
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git rebase --abort failed".to_string())
+            Err(JkiCoreError::Git("git rebase --abort failed".to_string()))
         }
     }
 
-    pub fn push(repo_path: &Path) -> Result<(), String> {
+    pub fn push(repo_path: &Path) -> Result<(), JkiCoreError> {
         let status = Command::new("git")
-            .args(["-C", repo_path.to_str().ok_or("Invalid path")?, "push"])
-            .status()
-            .map_err(|e| e.to_string())?;
+            .args(["-C", repo_path.to_str().ok_or_else(|| JkiCoreError::Path("Invalid path".to_string()))?, "push"])
+            .status()?;
         if status.success() {
             Ok(())
         } else {
-            Err("git push failed".to_string())
+            Err(JkiCoreError::Git("git push failed".to_string()))
         }
     }
 }
@@ -922,7 +955,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_acquire_master_key_fail_fast() {
+    fn test_acquire_master_key_fail_fast() -> Result<()> {
         use tempfile::tempdir;
         use std::env;
         use crate::keychain::tests::MockSecretStore;
@@ -941,24 +974,25 @@ mod tests {
         // Test explicit Keyfile source when file is missing
         let res = acquire_master_key(AuthSource::Keyfile, &interactor, Some(&mock_store));
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("File missing"));
+        assert!(res.unwrap_err().to_string().contains("File missing"));
 
         // Test explicit Keyfile source when permissions are insecure
         let key_path = crate::paths::JkiPath::master_key_path();
-        std::fs::write(&key_path, "pass").unwrap();
+        std::fs::write(&key_path, "pass")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))?;
             let res = acquire_master_key(AuthSource::Keyfile, &interactor, Some(&mock_store));
             assert!(res.is_err());
-            assert!(res.unwrap_err().contains("Insecure permissions"));
+            assert!(res.unwrap_err().to_string().contains("Insecure permissions"));
         }
 
         // Test explicit Keychain source when store is missing (None)
         let res = acquire_master_key(AuthSource::Keychain, &interactor, None);
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("Store not provided"));
+        assert!(res.unwrap_err().to_string().contains("Store not provided"));
+        Ok(())
     }
 
     #[test]
