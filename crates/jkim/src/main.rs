@@ -12,6 +12,7 @@ use jki_core::{
     TerminalInteractor,
     keychain::{KeyringStore, SecretStore},
     AuthSource,
+    JkiPathExt,
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -267,7 +268,7 @@ fn handle_status() -> anyhow::Result<()> {
     println!("--- Just Keep Identity Status ---\n");
     let key_path = JkiPath::master_key_path();
     if key_path.exists() {
-        match JkiPath::check_secure_permissions(&key_path) {
+        match key_path.check_secure_permissions() {
             Ok(_) => println!("  - Master Key File : OK ({:?}, 0600)", key_path),
             Err(e) => println!("  - Master Key File : SECURITY ERROR ({})", e),
         }

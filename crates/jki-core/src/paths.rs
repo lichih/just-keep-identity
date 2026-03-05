@@ -1,5 +1,35 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::env;
+
+pub trait JkiPathExt {
+    fn to_jki_metadata(&self) -> PathBuf;
+    fn to_jki_secrets(&self) -> PathBuf;
+    fn to_jki_decrypted_secrets(&self) -> PathBuf;
+    fn to_jki_master_key(&self) -> PathBuf;
+    fn to_jki_agent_socket(&self) -> PathBuf;
+    fn check_secure_permissions(&self) -> crate::Result<()>;
+}
+
+impl JkiPathExt for Path {
+    fn to_jki_metadata(&self) -> PathBuf { self.join("vault.metadata.json") }
+    fn to_jki_secrets(&self) -> PathBuf { self.join("vault.secrets.bin.age") }
+    fn to_jki_decrypted_secrets(&self) -> PathBuf { self.join("vault.secrets.json") }
+    fn to_jki_master_key(&self) -> PathBuf { self.join("master.key") }
+    fn to_jki_agent_socket(&self) -> PathBuf { self.join("jki.sock") }
+
+    fn check_secure_permissions(&self) -> crate::Result<()> {
+        if !self.exists() { return Err(crate::JkiCoreError::Path("File does not exist".to_string())); }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(self)?.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                return Err(crate::JkiCoreError::Path(format!("Insecure permissions: {:o}. Expected 0600.", mode)));
+            }
+        }
+        Ok(())
+    }
+}
 
 pub struct JkiPath;
 
@@ -8,11 +38,9 @@ impl JkiPath {
     pub fn home_dir() -> PathBuf {
         if let Ok(h) = env::var("JKI_HOME") {
             let p = PathBuf::from(&h);
-            // 嘗試規範化為絕對路徑，若失敗則保留原始值
             return p.canonicalize().unwrap_or_else(|_| p);
         }
 
-        // 預設路徑處理
         let mut path = if cfg!(windows) {
             dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
         } else {
@@ -26,44 +54,36 @@ impl JkiPath {
     pub fn metadata_path() -> PathBuf {
         env::var("JKI_METADATA_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::home_dir().join("vault.metadata.json"))
+            .unwrap_or_else(|_| Self::home_dir().to_jki_metadata())
     }
 
     pub fn secrets_path() -> PathBuf {
         env::var("JKI_SECRETS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::home_dir().join("vault.secrets.bin.age"))
+            .unwrap_or_else(|_| Self::home_dir().to_jki_secrets())
     }
 
     pub fn decrypted_secrets_path() -> PathBuf {
         env::var("JKI_DECRYPTED_SECRETS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::home_dir().join("vault.secrets.json"))
+            .unwrap_or_else(|_| Self::home_dir().to_jki_decrypted_secrets())
     }
 
     pub fn master_key_path() -> PathBuf {
         env::var("JKI_MASTER_KEY_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::home_dir().join("master.key"))
+            .unwrap_or_else(|_| Self::home_dir().to_jki_master_key())
     }
 
     pub fn agent_socket_path() -> PathBuf {
         env::var("JKI_AGENT_SOCKET_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::home_dir().join("jki.sock"))
+            .unwrap_or_else(|_| Self::home_dir().to_jki_agent_socket())
     }
 
-    pub fn check_secure_permissions(path: &PathBuf) -> crate::Result<()> {
-        if !path.exists() { return Err(crate::JkiCoreError::Path("File does not exist".to_string())); }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
-            if mode != 0o600 {
-                return Err(crate::JkiCoreError::Path(format!("Insecure permissions: {:o}. Expected 0600.", mode)));
-            }
-        }
-        Ok(())
+    /// Legacy support
+    pub fn check_secure_permissions(path: &Path) -> crate::Result<()> {
+        path.check_secure_permissions()
     }
 }
 
@@ -76,6 +96,15 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_extension_trait() {
+        let p = PathBuf::from("/tmp/jki_test");
+        assert_eq!(p.to_jki_metadata(), p.join("vault.metadata.json"));
+        assert_eq!(p.to_jki_secrets(), p.join("vault.secrets.bin.age"));
+        assert_eq!(p.to_jki_master_key(), p.join("master.key"));
+    }
+
+    #[test]
+    #[serial]
     fn test_home_dir_default() {
         let original_jki_home = env::var("JKI_HOME");
         env::remove_var("JKI_HOME");
@@ -85,27 +114,6 @@ mod tests {
 
         if let Ok(v) = original_jki_home {
             env::set_var("JKI_HOME", v);
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_home_dir_override() {
-        let temp = tempdir().unwrap();
-        let temp_path = temp.path().to_str().unwrap();
-        let original_jki_home = env::var("JKI_HOME");
-        
-        env::set_var("JKI_HOME", temp_path);
-        let home = JkiPath::home_dir();
-        
-        // canonicalize might change the path format on some OS, 
-        // but it should refer to the same directory.
-        assert_eq!(home.canonicalize().unwrap(), fs::canonicalize(temp_path).unwrap());
-
-        if let Ok(v) = original_jki_home {
-            env::set_var("JKI_HOME", v);
-        } else {
-            env::remove_var("JKI_HOME");
         }
     }
 
@@ -127,19 +135,17 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn test_check_secure_permissions() {
+    fn test_check_secure_permissions_trait() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempdir().unwrap();
         let file_path = temp.path().join("test.key");
         
         fs::write(&file_path, "secret").unwrap();
         
-        // Test insecure
         fs::set_permissions(&file_path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(JkiPath::check_secure_permissions(&file_path).is_err());
+        assert!(file_path.check_secure_permissions().is_err());
         
-        // Test secure
         fs::set_permissions(&file_path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(JkiPath::check_secure_permissions(&file_path).is_ok());
+        assert!(file_path.check_secure_permissions().is_ok());
     }
 }

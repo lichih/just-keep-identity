@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 
 pub mod import;
 pub mod paths;
+pub use paths::JkiPathExt;
 pub mod keychain;
 
 #[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone, PartialEq)]
@@ -316,7 +317,7 @@ pub fn acquire_master_key(
             // 3. Try master.key file
             let key_path = JkiPath::master_key_path();
             if key_path.exists() {
-                if JkiPath::check_secure_permissions(&key_path).is_ok() {
+                if key_path.check_secure_permissions().is_ok() {
                     let content = std::fs::read_to_string(key_path)?;
                     return Ok(SecretString::from(content.trim().to_string()));
                 }
@@ -334,7 +335,7 @@ pub fn acquire_master_key(
         AuthSource::Keyfile => {
             let key_path = JkiPath::master_key_path();
             if key_path.exists() {
-                if let Err(e) = JkiPath::check_secure_permissions(&key_path) {
+                if let Err(e) = key_path.check_secure_permissions() {
                      return Err(JkiCoreError::Auth(format!("Keyfile auth failed: {}", e)));
                 }
                 let content = std::fs::read_to_string(key_path)?;
