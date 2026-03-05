@@ -987,19 +987,30 @@ mod tests {
         assert_eq!(key.expose_secret(), "interactive_pass");
 
         // 2. Secret Store (Keychain) Priority
-        mock_store.set_secret("jki", "master_key", "keychain_pass").unwrap();
+        #[cfg(feature = "keychain")]
+        {
+            mock_store.set_secret("jki", "master_key", "keychain_pass").unwrap();
+            std::fs::write(&key_path, "file_pass").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+
+            let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
+            assert_eq!(key.expose_secret(), "keychain_pass");
+        }
+
+        // 3. File Priority (when keychain is missing or disabled)
+        #[cfg(feature = "keychain")]
+        mock_store.delete_secret("jki", "master_key").unwrap();
+        
         std::fs::write(&key_path, "file_pass").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-
-        let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
-        assert_eq!(key.expose_secret(), "keychain_pass");
-
-        // 3. File Priority (when keychain is missing)
-        mock_store.delete_secret("jki", "master_key").unwrap();
         let key = acquire_master_key(AuthSource::Auto, &interactor, Some(&mock_store)).unwrap();
         assert_eq!(key.expose_secret(), "file_pass");
 
@@ -1045,10 +1056,15 @@ mod tests {
             assert!(res.unwrap_err().to_string().contains("Insecure permissions"));
         }
 
-        // Test explicit Keychain source when store is missing (None)
+        // Test explicit Keychain source
         let res = acquire_master_key(AuthSource::Keychain, &interactor, None);
         assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("Store not provided"));
+        let err_msg = res.unwrap_err().to_string();
+        #[cfg(feature = "keychain")]
+        assert!(err_msg.contains("Store not provided"));
+        #[cfg(not(feature = "keychain"))]
+        assert!(err_msg.contains("not compiled in"));
+        
         Ok(())
     }
 

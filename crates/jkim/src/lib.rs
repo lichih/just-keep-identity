@@ -1394,4 +1394,24 @@ mod tests {
         handle_import_winauth(&import_file, false, AuthSource::Interactive, false, &interactor, true).unwrap();
         assert!(home.join("vault.secrets.bin.age").exists());
     }
+
+    #[test]
+    #[serial]
+    fn test_handle_status_smoke() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_status");
+        env::set_var("JKI_HOME", &home);
+        fs::create_dir_all(&home).unwrap();
+
+        // 1. Without Git
+        handle_status().unwrap();
+
+        // 2. With Git but no remote
+        handle_init(false).unwrap();
+        handle_status().unwrap();
+
+        // 3. With Master key
+        fs::write(home.join("master.key"), "testpass").unwrap();
+        handle_status().unwrap();
+    }
 }

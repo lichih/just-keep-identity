@@ -164,5 +164,15 @@ pub(crate) mod tests {
         // 4. Verify deletion
         let result = store.get_secret(service, user);
         assert!(result.is_err());
-    }
-}
+        }
+
+        #[test]
+        #[cfg(not(feature = "keychain"))]
+        fn test_keyring_store_fallback() {
+        let store = KeyringStore;
+        assert!(store.set_secret("s", "u", "p").is_err());
+        assert!(store.get_secret("s", "u").is_err());
+        assert!(store.delete_secret("s", "u").is_err());
+        }
+        }
+
