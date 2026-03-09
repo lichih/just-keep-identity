@@ -44,6 +44,10 @@ pub struct Cli {
     /// Apply recommended default decisions for all prompts
     #[arg(short, long, global = true)]
     pub default: bool,
+
+    /// Suppress non-critical output
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
 }
 
 #[derive(Subcommand)]
@@ -53,6 +57,22 @@ pub enum Commands {
     /// Initialize the JKI home directory and Git repository
     Init {
         /// Force reset by deleting existing vault data
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Add a new account manually
+    Add {
+        /// Account name (e.g., email or username)
+        name: Option<String>,
+        /// Issuer name (e.g., Google, GitHub)
+        issuer: Option<String>,
+        /// Base32 encoded secret
+        #[arg(short, long)]
+        secret: Option<String>,
+        /// Import from an otpauth:// URI
+        #[arg(short, long)]
+        uri: Option<String>,
+        /// Overwrite if name and issuer already exist
         #[arg(short, long)]
         force: bool,
     },
@@ -886,6 +906,136 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, auth: AuthSource, defa
     Ok(())
 }
 
+fn handle_add(
+    name: &Option<String>,
+    issuer: &Option<String>,
+    secret: &Option<String>,
+    uri: &Option<String>,
+    force: bool,
+    auth: AuthSource,
+    default_flag: bool,
+    quiet: bool,
+    interactor: &dyn Interactor,
+) -> anyhow::Result<()> {
+    // 1. Data Source Resolution
+    let mut acc = if let Some(u) = uri {
+        parse_otpauth_uri(u).ok_or_else(|| anyhow!("Invalid OTPAuth URI format."))?
+    } else {
+        let n = name.clone().ok_or_else(|| {
+            if !atty::is(atty::Stream::Stdin) { return anyhow!("Account name is required in non-TTY mode."); }
+            anyhow!("Account name is required.")
+        })?;
+
+        let i = issuer.clone();
+        
+        let s = if let Some(s_cli) = secret {
+            if !quiet && atty::is(atty::Stream::Stdin) {
+                eprintln!("Warning: Secret provided in CLI might leak into history.");
+            }
+            s_cli.clone()
+        } else {
+            interactor.prompt_password("Enter Base32 Secret").map_err(|e| anyhow!(e))?.expose_secret().clone()
+        };
+
+        jki_core::Account {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: n,
+            issuer: i,
+            account_type: jki_core::AccountType::Standard,
+            secret: s,
+            digits: 6,
+            algorithm: "SHA1".to_string(),
+        }
+    };
+
+    // 2. Secret Cleaning
+    acc.secret = acc.secret.trim().replace(" ", "").to_uppercase();
+    
+    // 3. Base32 Sanity Check
+    if base32::decode(base32::Alphabet::RFC4648 { padding: true }, &acc.secret).is_none() {
+        if !quiet && !force {
+            eprintln!("Warning: Secret does not look like valid Base32.");
+            if !default_flag && !interactor.confirm("Proceed anyway?", false) {
+                return Err(anyhow!("Aborted due to invalid secret format."));
+            }
+        }
+    }
+
+    // 4. Persistence Logic
+    let meta_path = JkiPath::metadata_path();
+    let sec_path = JkiPath::secrets_path();
+    let dec_path = JkiPath::decrypted_secrets_path();
+
+    if !meta_path.parent().unwrap().exists() {
+        return Err(anyhow!("JKI home not initialized. Run 'jkim init' first."));
+    }
+
+    let master_key = acquire_master_key(auth, interactor, None).ok();
+
+    let mut metadata = if meta_path.exists() {
+        let content = fs::read_to_string(&meta_path).unwrap_or_default();
+        serde_json::from_str::<MetadataFile>(&content).unwrap_or(MetadataFile { accounts: vec![], version: 1 })
+    } else {
+        MetadataFile { accounts: vec![], version: 1 }
+    };
+
+    let (has_age, has_json) = (sec_path.exists(), dec_path.exists());
+    let mut secrets_map: HashMap<String, AccountSecret> = match (has_age, has_json) {
+        (true, _) => {
+            let k = master_key.clone().ok_or_else(|| anyhow!("Authentication required for encrypted vault."))?;
+            let encrypted = fs::read(&sec_path).context("Failed to read secrets file")?;
+            let decrypted = decrypt_with_master_key(&encrypted, &k).map_err(|e| anyhow!("Decryption failed: {}", e))?;
+            serde_json::from_slice(&decrypted).context("Failed to parse existing secrets JSON")?
+        },
+        (false, true) => {
+            let content = fs::read(&dec_path).context("Failed to read plaintext secrets")?;
+            serde_json::from_slice(&content).context("Failed to parse plaintext secrets")?
+        },
+        (false, false) => HashMap::new(),
+    };
+
+    // 5. Conflict Check
+    let existing_pos = metadata.accounts.iter().position(|m| m.name == acc.name && m.issuer == acc.issuer);
+    if let Some(pos) = existing_pos {
+        if !force {
+            return Err(anyhow!("Conflict: Account '{}:{}' already exists. Use -f/--force to overwrite.", 
+                acc.issuer.as_deref().unwrap_or(""), acc.name));
+        }
+        if !quiet { eprintln!("Overwriting existing account: {}:{}", acc.issuer.as_deref().unwrap_or(""), acc.name); }
+        acc.id = metadata.accounts[pos].id.clone();
+        metadata.accounts[pos] = acc.clone();
+    } else {
+        metadata.accounts.push(acc.clone());
+    }
+
+    let entry = AccountSecret { secret: acc.secret.clone(), digits: acc.digits, algorithm: acc.algorithm.clone() };
+    secrets_map.insert(acc.id.clone(), entry);
+
+    // 6. Write back
+    let secrets_json = serde_json::to_vec(&secrets_map).context("Failed to serialize secrets")?;
+    if has_age {
+        let k = master_key.ok_or_else(|| anyhow!("Key required for encrypted write"))?;
+        let encrypted = encrypt_with_master_key(&secrets_json, &k).map_err(|e| anyhow!("Encryption failed: {}", e))?;
+        fs::write(&sec_path, encrypted).context("Failed to write encrypted vault")?;
+    } else if has_json {
+        fs::write(&dec_path, &secrets_json).context("Failed to write plaintext vault")?;
+    } else {
+        // New vault
+        if let Some(k) = master_key {
+            let encrypted = encrypt_with_master_key(&secrets_json, &k).map_err(|e| anyhow!("Encryption failed: {}", e))?;
+            fs::write(&sec_path, encrypted).context("Failed to write encrypted vault")?;
+        } else {
+            fs::write(&dec_path, &secrets_json).context("Failed to write plaintext vault")?;
+        }
+    }
+
+    fs::write(&meta_path, serde_json::to_string_pretty(&metadata).unwrap()).context("Failed to write metadata")?;
+
+    if !quiet { println!("Account added successfully: {}:{}", acc.issuer.as_deref().unwrap_or(""), acc.name); }
+    let _ = jki_core::agent::AgentClient::reload();
+    Ok(())
+}
+
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     let interactor = TerminalInteractor;
     let mut auth = cli.auth;
@@ -895,6 +1045,8 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Status => handle_status()?,
         Commands::Agent(a) => handle_agent(a)?,
         Commands::Init { force } => handle_init(*force)?,
+        Commands::Add { name, issuer, secret, uri, force } => 
+            handle_add(name, issuer, secret, uri, *force, auth, cli.default, cli.quiet, &interactor)?,
         Commands::Sync => handle_sync(cli.default, &interactor)?,
         Commands::Edit => handle_edit()?,
         Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, auth, &interactor)?,
@@ -1413,5 +1565,88 @@ mod tests {
         // 3. With Master key
         fs::write(home.join("master.key"), "testpass").unwrap();
         handle_status().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_add_uri() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_add_uri");
+        env::set_var("JKI_HOME", &home);
+        handle_init(false).unwrap();
+
+        let uri = "otpauth://totp/Google:test@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google";
+        let interactor = jki_core::MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        
+        handle_add(&None, &None, &None, &Some(uri.to_string()), false, AuthSource::Auto, true, true, &interactor).unwrap();
+
+        let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
+        let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
+        assert_eq!(metadata.accounts.len(), 1);
+        assert_eq!(metadata.accounts[0].name, "test@gmail.com");
+        assert_eq!(metadata.accounts[0].issuer, Some("Google".to_string()));
+
+        let sec_content = fs::read(home.join("vault.secrets.json")).unwrap();
+        let secrets: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_content).unwrap();
+        let acc_id = &metadata.accounts[0].id;
+        assert_eq!(secrets.get(acc_id).unwrap().secret, "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_add_manual_cleaning() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_add_manual");
+        env::set_var("JKI_HOME", &home);
+        handle_init(false).unwrap();
+
+        // Secret with spaces and lowercase
+        let name = Some("test".to_string());
+        let issuer = Some("Service".to_string());
+        let secret = Some("jbsw y3dp ehpk 3pxp".to_string()); 
+        
+        let interactor = jki_core::MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        handle_add(&name, &issuer, &secret, &None, false, AuthSource::Auto, true, true, &interactor).unwrap();
+
+        let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
+        let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
+        let acc_id = &metadata.accounts[0].id;
+
+        let sec_content = fs::read(home.join("vault.secrets.json")).unwrap();
+        let secrets: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_content).unwrap();
+        // Should be cleaned to uppercase and no spaces
+        assert_eq!(secrets.get(acc_id).unwrap().secret, "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_add_conflict() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_add_conflict");
+        env::set_var("JKI_HOME", &home);
+        handle_init(false).unwrap();
+
+        let name = Some("test".to_string());
+        let issuer = Some("Service".to_string());
+        let secret = Some("JBSWY3DPEHPK3PXP".to_string());
+        let interactor = jki_core::MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+
+        // First add
+        handle_add(&name, &issuer, &secret, &None, false, AuthSource::Auto, true, true, &interactor).unwrap();
+
+        // Second add without force -> Conflict
+        let res = handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, false, AuthSource::Auto, true, true, &interactor);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("already exists"));
+
+        // Third add WITH force -> Success
+        handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, true, AuthSource::Auto, true, true, &interactor).unwrap();
+        
+        let sec_content = fs::read(home.join("vault.secrets.json")).unwrap();
+        let secrets: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_content).unwrap();
+        let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
+        let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
+        let acc_id = &metadata.accounts[0].id;
+        assert_eq!(secrets.get(acc_id).unwrap().secret, "NEWSECRET");
     }
 }

@@ -49,30 +49,42 @@
 *   `stop`: 優雅關閉正在運行的 `jki-agent`。
 *   `restart`: 重啟代理服務。
 
-### **3.3 環境初始化 (init)**
+### 3.3 環境初始化 (init)
 `jkim init [--force]`
 *   初始化 JKI 工作目錄與 Git 儲存庫。使用 `-f` 可執行物理重置。
 
-### **3.4 金鑰管理 (master-key)**
+### 3.4 帳號管理 (add)
+`jkim add [NAME] [ISSUER] [--secret <SECRET>] [--uri <URI>] [-f/--force]`
+*   手動新增 OTP 帳號。
+*   **參數**:
+    *   `NAME`: 帳號名稱（如 Email）。
+    *   `ISSUER`: 發行者名稱（如 Google）。
+    *   `--secret`: 直接提供 Base32 金鑰。會自動執行 `trim()`、空格移除與轉大寫。
+    *   `--uri`: 從 `otpauth://` URI 匯入。
+    *   `-f, --force`: 若名稱與發行者重複，強制覆蓋現有分錄。
+*   **安全特性**: 在 TTY 模式下若直接提供 `--secret`，會發出 History 洩漏警告。
+
+### 3.5 金鑰管理 (master-key)
+
 `jkim master-key <SUBCOMMAND>`
 *   `set [--force] [--keychain]`: 將金鑰寫入磁碟，預設同步寫入 Keychain。
 *   `remove [--force] [--keychain]`: 從磁碟與 Keychain 移除金鑰。
 *   `change [--commit]`: 執行金鑰輪轉，重新加密金庫並更新系統紀錄。
 
-### **3.5 系統金鑰鏈工具 (keychain)**
+### **3.6 系統金鑰鏈工具 (keychain)**
 `jkim keychain <SUBCOMMAND>`
 *   `set`: 在終端機安全輸入 Master Key 並直接寫入系統 Keychain（具備 ACL 授權）。
 *   `push`: 將本地 `master.key` 內容寫入系統 Keychain。
 *   `pull`: 將系統 Keychain 中的金鑰讀取並存回本地 `master.key`。
 *   `remove`: 徹底刪除系統 Keychain 中的 `jki:master_key`項目。
 
-### **3.6 資料管理 (Vault Management)**
+### **3.7 資料管理 (Vault Management)**
 *   **decrypt**: 將金庫轉換為明文 JSON。
 *   **encrypt**: 將明文金庫壓回加密的 `.age` 檔案。
 *   **import-winauth <FILE>**: 從 WinAuth 匯出檔批次匯入帳號。
 *   **export [--output <FILE>]**: 匯出加密的 ZIP 備份包（包含 OTPAuth URI 清單）。
 
-### **3.7 資料編輯 (edit)**
+### **3.8 資料編輯 (edit)**
 `jkim edit`
 *   呼叫 `$EDITOR` 編輯 Metadata。存檔後自動執行格式驗證並通知 Agent 重載。
 
