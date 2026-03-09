@@ -75,6 +75,9 @@ pub enum Commands {
         /// Overwrite if name and issuer already exist
         #[arg(short, long)]
         force: bool,
+        /// Show the secret and OTPAuth URI after adding
+        #[arg(short = 'S', long)]
+        show_secret: bool,
     },
     /// Sync changes to Git (add, commit, pull --rebase, push)
     Sync,
@@ -912,6 +915,7 @@ fn handle_add(
     secret: &Option<String>,
     uri: &Option<String>,
     force: bool,
+    show_secret: bool,
     auth: AuthSource,
     default_flag: bool,
     quiet: bool,
@@ -1020,7 +1024,7 @@ fn handle_add(
     }
 
     let entry = AccountSecret { secret: acc.secret.clone(), digits: acc.digits, algorithm: acc.algorithm.clone() };
-    secrets_map.insert(acc.id.clone(), entry);
+    secrets_map.insert(acc.id.clone(), entry.clone());
 
     // 6. Write back
     let secrets_json = serde_json::to_vec(&secrets_map).context("Failed to serialize secrets")?;
@@ -1028,6 +1032,12 @@ fn handle_add(
         let k = master_key.ok_or_else(|| anyhow!("Key required for encrypted write"))?;
         let encrypted = encrypt_with_master_key(&secrets_json, &k).map_err(|e| anyhow!("Encryption failed: {}", e))?;
         fs::write(&sec_path, encrypted).context("Failed to write encrypted vault")?;
+        
+        // Anti-Shadowing: If a plaintext vault exists, it's now stale. Delete it.
+        if has_json {
+            let _ = fs::remove_file(&dec_path);
+            if !quiet { eprintln!("Note: Stale plaintext vault deleted to maintain integrity."); }
+        }
     } else if has_json {
         fs::write(&dec_path, &secrets_json).context("Failed to write plaintext vault")?;
     } else {
@@ -1043,6 +1053,13 @@ fn handle_add(
     fs::write(&meta_path, serde_json::to_string_pretty(&metadata).unwrap()).context("Failed to write metadata")?;
 
     if !quiet { println!("Account added successfully: {}:{}", acc.issuer.as_deref().unwrap_or(""), acc.name); }
+    
+    if show_secret {
+        if !quiet { eprintln!("[Secret] Added: {}:{}", acc.issuer.as_deref().unwrap_or(""), acc.name); }
+        println!("{}", entry.secret);
+        println!("{}", acc.to_otpauth_uri());
+    }
+
     let _ = jki_core::agent::AgentClient::reload();
     Ok(())
 }
@@ -1056,8 +1073,8 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Status => handle_status()?,
         Commands::Agent(a) => handle_agent(a)?,
         Commands::Init { force } => handle_init(*force)?,
-        Commands::Add { name, issuer, secret, uri, force } => 
-            handle_add(name, issuer, secret, uri, *force, auth, cli.default, cli.quiet, &interactor)?,
+        Commands::Add { name, issuer, secret, uri, force, show_secret } => 
+            handle_add(name, issuer, secret, uri, *force, *show_secret, auth, cli.default, cli.quiet, &interactor)?,
         Commands::Sync => handle_sync(cli.default, &interactor)?,
         Commands::Edit => handle_edit()?,
         Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, auth, &interactor)?,
@@ -1607,7 +1624,7 @@ mod tests {
         let uri = "otpauth://totp/Google:test@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google";
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
         
-        handle_add(&None, &None, &None, &Some(uri.to_string()), false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&None, &None, &None, &Some(uri.to_string()), false, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
         let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
@@ -1635,7 +1652,7 @@ mod tests {
         let secret = Some("jbsw y3dp ehpk 3pxp".to_string()); 
         
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
-        handle_add(&name, &issuer, &secret, &None, false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &secret, &None, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
         let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
@@ -1661,15 +1678,15 @@ mod tests {
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
 
         // First add
-        handle_add(&name, &issuer, &secret, &None, false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &secret, &None, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         // Second add without force -> Conflict
-        let res = handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, false, AuthSource::Auto, true, true, &interactor);
+        let res = handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, false, false, AuthSource::Auto, true, true, &interactor);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("already exists"));
 
         // Third add WITH force -> Success
-        handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, true, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, true, false, AuthSource::Auto, true, true, &interactor).unwrap();
         
         let sec_content = fs::read(home.join("vault.secrets.json")).unwrap();
         let secrets: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_content).unwrap();
@@ -1677,5 +1694,26 @@ mod tests {
         let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
         let acc_id = &metadata.accounts[0].id;
         assert_eq!(secrets.get(acc_id).unwrap().secret, "NEWSECRET");
+    }
+
+    #[test]
+    #[serial]
+    fn test_handle_add_show_secret() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_add_show_secret");
+        env::set_var("JKI_HOME", &home);
+        handle_init(false).unwrap();
+
+        let name = Some("test".to_string());
+        let issuer = Some("Service".to_string());
+        let secret = Some("JBSWY3DPEHPK3PXP".to_string());
+        let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+
+        // Test that it runs with show_secret = true
+        handle_add(&name, &issuer, &secret, &None, false, true, AuthSource::Auto, true, true, &interactor).unwrap();
+        
+        let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
+        let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
+        assert_eq!(metadata.accounts.len(), 1);
     }
 }

@@ -35,6 +35,7 @@
 *   `-l, --list`: 強制顯示匹配清單。
 *   `-o, --otp`: 在清單模式下顯示 OTP。
 *   `-S, --show-secret`: 唯一匹配時，顯示原始 Base32 Secret 而非 OTP。
+*   `-U, --uri`: 唯一匹配時，顯示完整 OTPAuth URI 而非 OTP。
 
 ---
 
@@ -55,7 +56,7 @@
 *   初始化 JKI 工作目錄與 Git 儲存庫。使用 `-f` 可執行物理重置。
 
 ### 3.4 帳號管理 (add)
-`jkim add [NAME] [ISSUER] [--secret <SECRET>] [--uri <URI>] [-f/--force]`
+`jkim add [NAME] [ISSUER] [--secret <SECRET>] [--uri <URI>] [-f/--force] [-S/--show-secret]`
 *   手動新增 OTP 帳號。
 *   **參數**:
     *   `NAME`: 帳號名稱（如 Email）。
@@ -63,6 +64,8 @@
     *   `--secret`: 直接提供 Base32 金鑰。會自動執行 `trim()`、空格移除與轉大寫。
     *   `--uri`: 從 `otpauth://` URI 匯入。
     *   `-f, --force`: 若名稱與發行者重複，強制覆蓋現有分錄。
+    *   `-S, --show-secret`: 成功新增後，印出原始 Base32 Secret 與 OTPAuth URI。
+
 *   **安全特性**: 在 TTY 模式下若直接提供 `--secret`，會發出 History 洩漏警告。
 
 ### 3.5 金鑰管理 (master-key)

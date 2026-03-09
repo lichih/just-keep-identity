@@ -114,12 +114,19 @@ pub fn integrate_accounts(metadata: Vec<Account>, secrets: &HashMap<String, Acco
 use totp_rs::{Algorithm, TOTP, Secret};
 
 pub fn generate_otp(acc: &Account) -> Result<String> {
-    let secret_str = acc.secret.trim().replace(" ", "");
+    let secret_str = acc.secret.trim().replace(" ", "").to_uppercase();
     let secret = Secret::Encoded(secret_str).to_bytes().map_err(|e| JkiCoreError::Otp(e.to_string()))?;
     
+    let algo = match acc.algorithm.to_uppercase().as_str() {
+        "SHA1" => Algorithm::SHA1,
+        "SHA256" => Algorithm::SHA256,
+        "SHA512" => Algorithm::SHA512,
+        _ => Algorithm::SHA1, // Default fallback
+    };
+
     // 使用 new_unchecked 繞過 RFC 對長度的強硬要求 (128 bits)
     let totp = TOTP::new_unchecked(
-        Algorithm::SHA1, 
+        algo, 
         acc.digits as usize, 
         1, 
         30, 

@@ -46,8 +46,22 @@
 *   **信任共用**：在寫入系統 Keychain 時，應透過 `security` 指令的 `-T` 參數，同時將 `jkim` 與 `jki-agent` 加入受信任程式清單。
 *   **單一彈窗**：正確的 ACL 管理確保了在跨程式（從 `jkim` 到 `jki-agent`）存取同一密鑰時，作業系統僅會彈出一次驗證視窗，消除冗餘授權。
 
+### ---
+
+**第四章：身分獲取與即時核對 (Identity Access & Feedback)**
+
+#### **4.1 執行器強化 (jki)**
+為支援開發者核對與帳號遷移，`jki` 具備超越產碼的「物理身分」讀取能力：
+*   **物理金鑰讀取 (-S, --show-secret)**：唯一匹配時輸出原始 Base32 Secret。
+*   **完整身分導出 (-U, --uri)**：唯一匹配時輸出標準 `otpauth://` URI。
+*   **剪貼簿行為**：請求 Secret 或 URI 時，系統應自動將該字串複製至剪貼簿（除非指定 `--stdout`）。
+
+#### **4.2 管理中心反饋 (jkim add)**
+為確保手動新增資料的正確性，`jkim add` 遵循「即時物理驗證」原則：
+*   **顯式回饋 (-S, --show-secret)**：成功新增帳號後，若指定此旗標，系統應主動印出該帳號的 Secret 與 URI，以便使用者立即進行離線備份或實體比對。
+
 ---
-*Status: Architecture Baselined (V29 - ACL Optimized).*
+*Status: Architecture Baselined (V30 - Identity Feedback Optimized).*
 
 ## **附錄 A：金庫狀態與匯入邏輯決策 (Vault State & Import Logic)**
 

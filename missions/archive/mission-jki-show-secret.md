@@ -44,3 +44,4 @@
 2.  [x] 單元測試全數通過（不觸發 Keychain 授權）。
 3.  [x] `docs/jki-cli-spec.md` 已完成規格同步。
 4.  [x] 產出報表並清理 `.stable` 檔案。
+
