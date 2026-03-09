@@ -59,9 +59,10 @@
 #### **4.2 管理中心反饋 (jkim add)**
 為確保手動新增資料的正確性，`jkim add` 遵循「即時物理驗證」原則：
 *   **顯式回饋 (-S, --show-secret)**：成功新增帳號後，若指定此旗標，系統應主動印出該帳號的 Secret 與 URI，以便使用者立即進行離線備份或實體比對。
+*   **物理握手 (Handshake)**：系統應實作動態握手流程。在未獲得「預先授權與安靜要求」的雙重條件下，系統必須作為產碼端引導使用者完成實體驗證，落實「寫入即正確」的原則（詳見 CLI Spec 1.1 矩陣）。
 
 ---
-*Status: Architecture Baselined (V30 - Identity Feedback Optimized).*
+*Status: Architecture Baselined (V31 - SSoT Identity Governance).*
 
 ## **附錄 A：金庫狀態與匯入邏輯決策 (Vault State & Import Logic)**
 

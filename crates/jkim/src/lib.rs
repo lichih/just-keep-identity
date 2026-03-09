@@ -21,7 +21,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::env;
-use std::io::{Read, Write};
+use std::io::{Read, Write, stdout};
+use std::time::Duration;
+use crossterm::{
+    execute,
+    terminal,
+    cursor,
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+};
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 use zip::AesMode;
@@ -67,10 +74,10 @@ pub enum Commands {
         /// Issuer name (e.g., Google, GitHub)
         issuer: Option<String>,
         /// Base32 encoded secret
-        #[arg(short, long)]
+        #[arg(short = 's', long)]
         secret: Option<String>,
         /// Import from an otpauth:// URI
-        #[arg(short, long)]
+        #[arg(long)]
         uri: Option<String>,
         /// Overwrite if name and issuer already exist
         #[arg(short, long)]
@@ -78,6 +85,9 @@ pub enum Commands {
         /// Show the secret and OTPAuth URI after adding
         #[arg(short = 'S', long)]
         show_secret: bool,
+        /// Direct OTP output to stdout only (disables clipboard during handshake)
+        #[arg(long)]
+        stdout: bool,
     },
     /// Sync changes to Git (add, commit, pull --rebase, push)
     Sync,
@@ -909,6 +919,94 @@ fn handle_import_winauth(file: &PathBuf, overwrite: bool, auth: AuthSource, defa
     Ok(())
 }
 
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn init() -> anyhow::Result<Self> {
+        terminal::enable_raw_mode()?;
+        execute!(stdout(), cursor::Hide)?;
+        Ok(TerminalGuard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = execute!(stdout(), cursor::Show);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+fn perform_handshake(acc: &Account, is_authorized: bool, stdout_flag: bool) -> anyhow::Result<bool> {
+    let _guard = TerminalGuard::init()?;
+    let mut stdout_handle = stdout();
+
+    print!("\r\n[Handshake] Please verify this code on the service provider's website:\r\n");
+    print!("  Account : {}{}\r\n", acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
+    
+    let clipboard_status = if stdout_flag { 
+        "\x1b[33mDisabled (Stdout mode)\x1b[0m" 
+    } else { 
+        "\x1b[32mAuto-syncing (Enabled)\x1b[0m" 
+    };
+    print!("  Clipboard: {}\r\n", clipboard_status);
+
+    if is_authorized {
+        print!("  Status  : Pre-authorized. You can press ENTER to save immediately.\r\n");
+    }
+    print!("--------------------------------------------------\r\n");
+    stdout_handle.flush()?;
+
+    let mut last_otp: Option<String> = None;
+
+    let res = (|| -> anyhow::Result<bool> {
+        loop {
+            let now = chrono::Utc::now().timestamp() as u64;
+            let seconds_left = 30 - (now % 30);
+            let otp = jki_core::generate_otp(acc).unwrap_or_else(|_| "ERROR".to_string());
+            
+            // Auto-copy to clipboard if changed and not in stdout mode
+            if !stdout_flag && last_otp.as_ref() != Some(&otp) {
+                use copypasta::{ClipboardContext, ClipboardProvider};
+                if let Ok(mut ctx) = ClipboardContext::new() {
+                    let _ = <ClipboardContext as ClipboardProvider>::set_contents(&mut ctx, otp.clone());
+                }
+                last_otp = Some(otp.clone());
+            }
+
+            // Format OTP with space for readability
+            let display_otp = if otp.len() == 6 {
+                format!("{} {}", &otp[0..3], &otp[3..6])
+            } else {
+                otp
+            };
+
+            let copy_indicator = if !stdout_flag { " (Copied!)" } else { "" };
+            print!("\r  CODE    : \x1b[1;32m{}\x1b[0m  (expires in {:2}s){}   ", display_otp, seconds_left, copy_indicator);
+            stdout_handle.flush()?;
+
+            // Poll for input (100ms)
+            if event::poll(Duration::from_millis(100))? {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Enter => return Ok(true),
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                return Ok(false);
+                            }
+                            KeyCode::Esc => return Ok(false),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    })();
+
+    print!("\r\n--------------------------------------------------\r\n");
+    stdout_handle.flush()?;
+    res
+}
+
 fn handle_add(
     name: &Option<String>,
     issuer: &Option<String>,
@@ -916,41 +1014,78 @@ fn handle_add(
     uri: &Option<String>,
     force: bool,
     show_secret: bool,
+    stdout_flag: bool,
     auth: AuthSource,
     default_flag: bool,
     quiet: bool,
     interactor: &dyn Interactor,
 ) -> anyhow::Result<()> {
-    // 1. Data Source Resolution
+    let mut stdout_flag = stdout_flag;
+    let mut name = name.clone();
+    let mut issuer = issuer.clone();
+
+    // Support '-' as positional alias for stdout
+    if name.as_deref() == Some("-") {
+        stdout_flag = true;
+        name = None;
+    }
+    if issuer.as_deref() == Some("-") {
+        stdout_flag = true;
+        issuer = None;
+    }
+
+    // 1. Data Source Resolution (with Smart URI Detection)
     let mut acc = if let Some(u) = uri {
         parse_otpauth_uri(u).ok_or_else(|| anyhow!("Invalid OTPAuth URI format."))?
-    } else {
-        let n = if let Some(n_val) = name {
-            n_val.clone()
+    } else if let Some(n_val) = &name {
+        if n_val.starts_with("otpauth://") {
+            parse_otpauth_uri(n_val).ok_or_else(|| anyhow!("Invalid OTPAuth URI format in positional argument."))?
         } else {
-            if !atty::is(atty::Stream::Stdin) { return Err(anyhow!("Account name is required in non-TTY mode.")); }
-            interactor.prompt("Enter Account Name").map_err(|e| anyhow!(e))?
+            // Standard manual input path
+            let n = n_val.clone();
+            let i = if let Some(i_val) = &issuer {
+                Some(i_val.clone())
+            } else {
+                if atty::is(atty::Stream::Stdin) {
+                    let input = interactor.prompt("Enter Issuer (Optional, Enter to skip)").map_err(|e| anyhow!(e))?;
+                    if input.is_empty() { None } else { Some(input) }
+                } else {
+                    None
+                }
+            };
+            
+            let s = if let Some(s_cli) = secret {
+                if !quiet && atty::is(atty::Stream::Stdin) {
+                    eprintln!("Warning: Secret provided in CLI might leak into history.");
+                }
+                s_cli.clone()
+            } else {
+                interactor.prompt_password("Enter Base32 Secret").map_err(|e| anyhow!(e))?.expose_secret().clone()
+            };
+
+            jki_core::Account {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: n,
+                issuer: i,
+                account_type: jki_core::AccountType::Standard,
+                secret: s,
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            }
+        }
+    } else {
+        // No arguments provided, prompt for everything
+        if !atty::is(atty::Stream::Stdin) { return Err(anyhow!("Account name is required in non-TTY mode.")); }
+        let n = interactor.prompt("Enter Account Name").map_err(|e| anyhow!(e))?;
+        
+        let i = if atty::is(atty::Stream::Stdin) {
+            let input = interactor.prompt("Enter Issuer (Optional, Enter to skip)").map_err(|e| anyhow!(e))?;
+            if input.is_empty() { None } else { Some(input) }
+        } else {
+            None
         };
 
-        let i = if let Some(i_val) = issuer {
-            Some(i_val.clone())
-        } else {
-            if atty::is(atty::Stream::Stdin) {
-                let input = interactor.prompt("Enter Issuer (Optional, Enter to skip)").map_err(|e| anyhow!(e))?;
-                if input.is_empty() { None } else { Some(input) }
-            } else {
-                None
-            }
-        };
-        
-        let s = if let Some(s_cli) = secret {
-            if !quiet && atty::is(atty::Stream::Stdin) {
-                eprintln!("Warning: Secret provided in CLI might leak into history.");
-            }
-            s_cli.clone()
-        } else {
-            interactor.prompt_password("Enter Base32 Secret").map_err(|e| anyhow!(e))?.expose_secret().clone()
-        };
+        let s = interactor.prompt_password("Enter Base32 Secret").map_err(|e| anyhow!(e))?.expose_secret().clone();
 
         jki_core::Account {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1018,6 +1153,20 @@ fn handle_add(
         }
         if !quiet { eprintln!("Overwriting existing account: {}:{}", acc.issuer.as_deref().unwrap_or(""), acc.name); }
         acc.id = metadata.accounts[pos].id.clone();
+    }
+
+    // --- SSoT Handshake Loop ---
+    let is_authorized = force || default_flag;
+    let should_handshake = atty::is(atty::Stream::Stdin) && !(is_authorized && quiet);
+
+    if should_handshake {
+        if !perform_handshake(&acc, is_authorized, stdout_flag)? {
+            println!("\nAborted. No changes saved to vault.");
+            return Ok(());
+        }
+    }
+
+    if let Some(pos) = existing_pos {
         metadata.accounts[pos] = acc.clone();
     } else {
         metadata.accounts.push(acc.clone());
@@ -1073,8 +1222,8 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Status => handle_status()?,
         Commands::Agent(a) => handle_agent(a)?,
         Commands::Init { force } => handle_init(*force)?,
-        Commands::Add { name, issuer, secret, uri, force, show_secret } => 
-            handle_add(name, issuer, secret, uri, *force, *show_secret, auth, cli.default, cli.quiet, &interactor)?,
+        Commands::Add { name, issuer, secret, uri, force, show_secret, stdout } => 
+            handle_add(name, issuer, secret, uri, *force, *show_secret, *stdout, auth, cli.default, cli.quiet, &interactor)?,
         Commands::Sync => handle_sync(cli.default, &interactor)?,
         Commands::Edit => handle_edit()?,
         Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, auth, &interactor)?,
@@ -1624,7 +1773,7 @@ mod tests {
         let uri = "otpauth://totp/Google:test@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google";
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
         
-        handle_add(&None, &None, &None, &Some(uri.to_string()), false, false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&None, &None, &None, &Some(uri.to_string()), false, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
         let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
@@ -1652,7 +1801,7 @@ mod tests {
         let secret = Some("jbsw y3dp ehpk 3pxp".to_string()); 
         
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
-        handle_add(&name, &issuer, &secret, &None, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &secret, &None, false, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
         let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();
@@ -1678,15 +1827,15 @@ mod tests {
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
 
         // First add
-        handle_add(&name, &issuer, &secret, &None, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &secret, &None, false, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         // Second add without force -> Conflict
-        let res = handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, false, false, AuthSource::Auto, true, true, &interactor);
+        let res = handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, false, false, false, AuthSource::Auto, true, true, &interactor);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("already exists"));
 
         // Third add WITH force -> Success
-        handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, true, false, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &Some("NEWSECRET".to_string()), &None, true, false, false, AuthSource::Auto, true, true, &interactor).unwrap();
         
         let sec_content = fs::read(home.join("vault.secrets.json")).unwrap();
         let secrets: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_content).unwrap();
@@ -1710,7 +1859,7 @@ mod tests {
         let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
 
         // Test that it runs with show_secret = true
-        handle_add(&name, &issuer, &secret, &None, false, true, AuthSource::Auto, true, true, &interactor).unwrap();
+        handle_add(&name, &issuer, &secret, &None, false, true, false, AuthSource::Auto, true, true, &interactor).unwrap();
         
         let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
         let metadata: MetadataFile = serde_json::from_str(&meta_content).unwrap();

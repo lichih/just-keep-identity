@@ -9,12 +9,25 @@
 適用於所有 `jki` 與 `jkim` 指令：
 *   `-A, --auth <SOURCE>`: 指定認證權威來源。支援 `auto`, `agent`, `plain`, `mkey`, `interactive`。
 *   `-I, --interactive`: 強制互動模式（等同於 `-A interactive`）。
-*   `-q, --quiet`: 安靜模式。抑制 stderr 的提示、進度訊息與非關鍵警告。
+*   `-q, --quiet`: 安靜模式。對「已預先授權」訊息執行噪聲抑制。
 *   `-d, --default`: 自動模式。對於所有具備建議偏好的詢問（如狀態轉換、匯入衝突），自動套用系統推薦行為。
 
 ---
 
-## **1.1 認證優先序 (Authentication Priority)**
+## **1.1 授權與抑制矩陣 (Authorization & Suppression Matrix)**
+
+所有變動性操作（如 `add`, `edit`, `sync`, `init`）必須遵循此權威矩陣：
+
+| 授權狀態 (Auth) | 噪聲要求 (Quiet) | 系統行為 (Behavior) |
+| :--- | :--- | :--- |
+| **未授權 (Default)** | **非安靜 (Default)** | **互動保護**：執行完整安全檢查、導引與握手。 |
+| **未授權** | **安靜 (-q)** | **無效抑制**：忽略 `-q` 對核心安全流程的抑制，仍執行互動保護。 |
+| **已授權 (-f, -d)** | **非安靜** | **輕量導引**：執行操作，顯示非阻斷性的操作摘要或即時回饋。 |
+| **已授權 (-f, -d)** | **安靜 (-q)** | **全速自動化**：靜默執行物理操作，僅在發生「阻斷性錯誤」時輸出 stderr。 |
+
+---
+
+## **1.2 認證優先序 (Authentication Priority)**
 
 當指令需要解鎖加密金庫（`.age`）且未指定 `-A`時，依序嘗試：
 1.  **Agent Session**: 透過 IPC 請求 `jki-agent` (最高優先)。
@@ -56,15 +69,23 @@
 *   初始化 JKI 工作目錄與 Git 儲存庫。使用 `-f` 可執行物理重置。
 
 ### 3.4 帳號管理 (add)
-`jkim add [NAME] [ISSUER] [--secret <SECRET>] [--uri <URI>] [-f/--force] [-S/--show-secret]`
+`jkim add [NAME] [ISSUER] [--secret <SECRET>] [--uri <URI>] [-f/--force] [-S/--show-secret] [--stdout]`
 *   手動新增 OTP 帳號。
+*   **物理握手 (Live Handshake)**：
+    *   在 TTY 模式下，存檔前會進入動態產碼循環，顯示即時 OTP 供使用者向服務商驗證。
+    *   **剪貼簿自動化**：握手期間，系統會自動將最新的 OTP 碼複製到剪貼簿（除非指定了 `--stdout` 或 `-`），畫面上會顯示 `(Copied!)`。
+    *   **按下 ENTER**：確認驗證通過，執行物理寫入。
+    - **按下 CTRL-C**：取消操作，不更動金庫。
 *   **參數**:
     *   `NAME`: 帳號名稱（如 Email）。
     *   `ISSUER`: 發行者名稱（如 Google）。
-    *   `--secret`: 直接提供 Base32 金鑰。會自動執行 `trim()`、空格移除與轉大寫。
+    *   `-s, --secret`: 直接提供 Base32 金鑰。會自動執行 `trim()`、空格移除與轉大寫。
     *   `--uri`: 從 `otpauth://` URI 匯入。
     *   `-f, --force`: 若名稱與發行者重複，強制覆蓋現有分錄。
     *   `-S, --show-secret`: 成功新增後，印出原始 Base32 Secret 與 OTPAuth URI。
+    *   `--stdout`: 僅在 stdout 輸出，握手期間不觸碰剪貼簿。
+    *   `-`: 等同於 `--stdout`。
+*   **授權矩陣應用**：若同時指定 `-f` (或 `-d`) 與 `-q`，則跳過握手執行靜默寫入。
 
 *   **安全特性**: 在 TTY 模式下若直接提供 `--secret`，會發出 History 洩漏警告。
 

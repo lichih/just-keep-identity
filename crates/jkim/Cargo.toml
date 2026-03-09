@@ -19,6 +19,8 @@ secrecy = "0.8"
 anyhow = "1.0"
 zip = { version = "2.1", features = ["aes-crypto"] }
 clap_complete = "4.4"
+crossterm = "0.27"
+copypasta = "0.10"
 
 [dev-dependencies]
 serial_test = "3"
