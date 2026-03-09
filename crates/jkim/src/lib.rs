@@ -921,12 +921,23 @@ fn handle_add(
     let mut acc = if let Some(u) = uri {
         parse_otpauth_uri(u).ok_or_else(|| anyhow!("Invalid OTPAuth URI format."))?
     } else {
-        let n = name.clone().ok_or_else(|| {
-            if !atty::is(atty::Stream::Stdin) { return anyhow!("Account name is required in non-TTY mode."); }
-            anyhow!("Account name is required.")
-        })?;
+        let n = if let Some(n_val) = name {
+            n_val.clone()
+        } else {
+            if !atty::is(atty::Stream::Stdin) { return Err(anyhow!("Account name is required in non-TTY mode.")); }
+            interactor.prompt("Enter Account Name").map_err(|e| anyhow!(e))?
+        };
 
-        let i = issuer.clone();
+        let i = if let Some(i_val) = issuer {
+            Some(i_val.clone())
+        } else {
+            if atty::is(atty::Stream::Stdin) {
+                let input = interactor.prompt("Enter Issuer (Optional, Enter to skip)").map_err(|e| anyhow!(e))?;
+                if input.is_empty() { None } else { Some(input) }
+            } else {
+                None
+            }
+        };
         
         let s = if let Some(s_cli) = secret {
             if !quiet && atty::is(atty::Stream::Stdin) {
@@ -1085,6 +1096,7 @@ mod tests {
 
         let cmd = MasterKeyCommands::Set { force: false, keychain: false, no_keychain: true };
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec!["newpass".to_string(), "newpass".to_string()]),
             confirms: RefCell::new(vec![]),
         };
@@ -1117,6 +1129,7 @@ mod tests {
 
         let cmd = MasterKeyCommands::Change { commit: false };
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec!["newpass".to_string(), "newpass".to_string()]),
             confirms: RefCell::new(vec![]),
         };
@@ -1141,6 +1154,7 @@ mod tests {
         
         let cmd = MasterKeyCommands::Remove { force: true, keychain: false };
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
             confirms: RefCell::new(vec![]),
         };
@@ -1182,6 +1196,7 @@ mod tests {
         fs::write(&import_file, "otpauth://totp/Google:test@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google\n").unwrap();
 
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
             confirms: RefCell::new(vec![]),
         };
@@ -1217,9 +1232,11 @@ mod tests {
         fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
         
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
-            confirms: RefCell::new(vec![true]), 
+            confirms: RefCell::new(vec![]),
         };
+
         handle_import_winauth(&import_file, false, AuthSource::Auto, false, &interactor, false).unwrap();
         assert!(home.join("vault.secrets.bin.age").exists());
         assert!(!home.join("vault.secrets.json").exists());
@@ -1228,34 +1245,42 @@ mod tests {
 
         fs::remove_file(&key_path).unwrap();
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
             confirms: RefCell::new(vec![true]), 
         };
+
         handle_import_winauth(&import_file, false, AuthSource::Auto, false, &interactor, false).unwrap();
         assert!(home.join("vault.secrets.json").exists());
         assert!(!home.join("vault.secrets.bin.age").exists());
 
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
-            confirms: RefCell::new(vec![]), 
+            confirms: RefCell::new(vec![]),
         };
+
         handle_import_winauth(&import_file, true, AuthSource::Auto, false, &interactor, false).unwrap();
         assert!(home.join("vault.secrets.json").exists());
 
         fs::write(&key_path, "testpass").unwrap();
         fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
             confirms: RefCell::new(vec![true]), 
         };
+
         handle_import_winauth(&import_file, true, AuthSource::Auto, false, &interactor, false).unwrap();
         assert!(home.join("vault.secrets.bin.age").exists());
         assert!(!home.join("vault.secrets.json").exists());
 
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec![]),
-            confirms: RefCell::new(vec![]), 
+            confirms: RefCell::new(vec![]),
         };
+
         handle_import_winauth(&import_file, true, AuthSource::Auto, false, &interactor, false).unwrap();
         assert!(home.join("vault.secrets.bin.age").exists());
     }
@@ -1271,7 +1296,7 @@ mod tests {
         
         fs::write(home.join("test.txt"), "content").unwrap();
         
-        let interactor = MockInteractor { passwords: std::cell::RefCell::new(vec![]), confirms: std::cell::RefCell::new(vec![]) };
+        let interactor = MockInteractor { prompts: std::cell::RefCell::new(vec![]), passwords: std::cell::RefCell::new(vec![]), confirms: std::cell::RefCell::new(vec![]) };
         handle_sync(false, &interactor).unwrap();
         
         let output = Command::new("git")
@@ -1304,6 +1329,7 @@ mod tests {
         fs::write(&sec_path, encrypted).unwrap();
 
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec!["testpass".to_string()]),
             confirms: RefCell::new(vec![true, false]),
         };
@@ -1399,6 +1425,7 @@ mod tests {
 
         // 3. Mock interactions (Master Key, then Export Password x2)
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec!["master_pass".to_string(), "zippass".to_string(), "zippass".to_string()]),
             confirms: RefCell::new(vec![]),
         };
@@ -1434,6 +1461,7 @@ mod tests {
 
         // Master Key, then Mismatched export passwords
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec!["master_pass".to_string(), "zippass".to_string(), "WRONGpass".to_string()]),
             confirms: RefCell::new(vec![]),
         };
@@ -1478,7 +1506,7 @@ mod tests {
         let import_file = temp.path().join("import.txt");
         fs::write(&import_file, "otpauth://totp/Google:test%40gmail.com?secret=NEWSECRET123&issuer=Google").unwrap();
 
-        let interactor = MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        let interactor = MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
 
         // Test Skip (overwrite = false)
         handle_import_winauth(&import_file, false, AuthSource::Auto, true, &interactor, false).unwrap();
@@ -1505,7 +1533,7 @@ mod tests {
         let import_file = temp.path().join("import.txt");
         fs::write(&import_file, "otpauth://totp/test?secret=S1").unwrap();
 
-        let interactor = MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        let interactor = MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
         let res = handle_import_winauth(&import_file, false, AuthSource::Auto, true, &interactor, false);
         
         assert!(res.is_err());
@@ -1532,6 +1560,7 @@ mod tests {
 
         // Mock interaction: provide WRONG key
         let interactor = MockInteractor {
+            prompts: RefCell::new(vec![]),
             passwords: RefCell::new(vec!["wrong_key".to_string()]),
             confirms: RefCell::new(vec![true]), // Confirm overwrite
         };
@@ -1576,7 +1605,7 @@ mod tests {
         handle_init(false).unwrap();
 
         let uri = "otpauth://totp/Google:test@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google";
-        let interactor = jki_core::MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
         
         handle_add(&None, &None, &None, &Some(uri.to_string()), false, AuthSource::Auto, true, true, &interactor).unwrap();
 
@@ -1605,7 +1634,7 @@ mod tests {
         let issuer = Some("Service".to_string());
         let secret = Some("jbsw y3dp ehpk 3pxp".to_string()); 
         
-        let interactor = jki_core::MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
         handle_add(&name, &issuer, &secret, &None, false, AuthSource::Auto, true, true, &interactor).unwrap();
 
         let meta_content = fs::read_to_string(home.join("vault.metadata.json")).unwrap();
@@ -1629,7 +1658,7 @@ mod tests {
         let name = Some("test".to_string());
         let issuer = Some("Service".to_string());
         let secret = Some("JBSWY3DPEHPK3PXP".to_string());
-        let interactor = jki_core::MockInteractor { passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
+        let interactor = jki_core::MockInteractor { prompts: RefCell::new(vec![]), passwords: RefCell::new(vec![]), confirms: RefCell::new(vec![]) };
 
         // First add
         handle_add(&name, &issuer, &secret, &None, false, AuthSource::Auto, true, true, &interactor).unwrap();

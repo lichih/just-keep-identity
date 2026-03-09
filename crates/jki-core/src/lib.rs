@@ -184,6 +184,7 @@ pub fn search_accounts(accounts: &[Account], patterns: &[String]) -> Vec<Account
 // --- 互動抽象 (用於 Mock 測試) ---
 
 pub trait Interactor {
+    fn prompt(&self, prompt: &str) -> Result<String>;
     fn prompt_password(&self, prompt: &str) -> Result<SecretString>;
     fn confirm(&self, prompt: &str, default: bool) -> bool;
 }
@@ -191,6 +192,15 @@ pub trait Interactor {
 pub struct TerminalInteractor;
 
 impl Interactor for TerminalInteractor {
+    fn prompt(&self, prompt: &str) -> Result<String> {
+        use std::io::{self, Write};
+        print!("{}: ", prompt);
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        Ok(input.trim().to_string())
+    }
+
     fn prompt_password(&self, prompt: &str) -> Result<SecretString> {
         use crossterm::{
             event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -259,11 +269,19 @@ impl Interactor for TerminalInteractor {
 }
 
 pub struct MockInteractor {
+    pub prompts: std::cell::RefCell<Vec<String>>,
     pub passwords: std::cell::RefCell<Vec<String>>,
     pub confirms: std::cell::RefCell<Vec<bool>>,
 }
 
 impl Interactor for MockInteractor {
+    fn prompt(&self, _prompt: &str) -> Result<String> {
+        if self.prompts.borrow().is_empty() {
+            return Err(JkiCoreError::Auth("No mock prompt provided".to_string()));
+        }
+        Ok(self.prompts.borrow_mut().remove(0))
+    }
+
     fn prompt_password(&self, _prompt: &str) -> Result<SecretString> {
         if self.passwords.borrow().is_empty() {
             return Err(JkiCoreError::Auth("No mock password provided".to_string()));
