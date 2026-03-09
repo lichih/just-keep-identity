@@ -35,6 +35,6 @@
 (符合 RFC 6238 規範)
 
 ## 7. 完工定義 (Definition of Done)
-1.  [ ] `jkim add` 實作完成。
-2.  [ ] **單元測試全數通過（且不觸發 Keychain 授權視窗）**。
-3.  [ ] `docs/jki-cli-spec.md` 已完成規格同步。
+1.  [x] `jkim add` 實作完成。
+2.  [x] **單元測試全數通過（且不觸發 Keychain 授權視窗）**。
+3.  [x] `docs/jki-cli-spec.md` 已完成規格同步。

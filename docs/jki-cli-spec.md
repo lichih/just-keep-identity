@@ -34,6 +34,7 @@
 *   `-`: 等同於 `--stdout`。
 *   `-l, --list`: 強制顯示匹配清單。
 *   `-o, --otp`: 在清單模式下顯示 OTP。
+*   `-S, --show-secret`: 唯一匹配時，顯示原始 Base32 Secret 而非 OTP。
 
 ---
 

@@ -33,6 +33,8 @@ struct Cli {
     pub list: bool,
     #[arg(short, long)]
     pub otp: bool,
+    #[arg(short = 'S', long = "show-secret")]
+    pub show_secret: bool,
     #[arg(short, long)]
     pub quiet: bool,
     #[arg(short = 's', long = "stdout")]
@@ -103,17 +105,17 @@ fn handle_agent(cmd: &AgentCommands, _auth: AuthSource, _quiet: bool) -> anyhow:
     Ok(())
 }
 
-fn handle_otp_output(otp: String, label: String, source: &str, stdout_flag: bool, quiet: bool) {
-    if !quiet { eprintln!("[{}] Selected: {}", source, label); }
-    if stdout_flag { println!("{}", otp); }
+fn handle_output(data: String, label: String, _source: &str, data_type: &str, stdout_flag: bool, quiet: bool) {
+    if !quiet { eprintln!("[{}] Selected: {}", data_type, label); }
+    if stdout_flag { println!("{}", data); }
     else {
         use copypasta::{ClipboardContext, ClipboardProvider};
         let mut ctx = ClipboardContext::new().expect("Failed to open clipboard");
-        ctx.set_contents(otp).expect("Failed to set clipboard content");
+        ctx.set_contents(data).expect("Failed to set clipboard content");
         if !quiet {
-            eprintln!("Copied OTP to clipboard.");
+            eprintln!("Copied {} to clipboard.", data_type);
             use notify_rust::Notification;
-            let _ = Notification::new().summary("jki: OTP Copied").body(&format!("Account: {}", label)).show();
+            let _ = Notification::new().summary(&format!("jki: {} Copied", data_type)).body(&format!("Account: {}", label)).show();
         }
     }
 }
@@ -165,7 +167,7 @@ fn resolve_target(
                         }
                     }
                     let selected = results_without_idx[idx - 1].clone();
-                    let results = vec![selected.clone()];
+                    let results = results_without_idx.clone();
                     let target = if !list_mode { Some(selected) } else { None };
                     (results, target)
                 } else {
@@ -266,19 +268,25 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(acc) = acc_ref {
         let label = format!("{}{}", acc.issuer.as_deref().map(|s| format!("[{}] ", s)).unwrap_or_default(), acc.name);
         
+        // Plaintext check
         if auth == AuthSource::Plaintext || auth == AuthSource::Auto {
             let decrypted_path = JkiPath::decrypted_secrets_path();
             if decrypted_path.exists() {
                 if let Ok(content) = fs::read(&decrypted_path) {
                     if let Ok(secrets_map) = serde_json::from_slice::<HashMap<String, AccountSecret>>(&content) {
                         if let Some(s) = secrets_map.get(&acc.id) {
-                            let mut full_acc = acc.clone();
-                            full_acc.secret = s.secret.clone();
-                            full_acc.digits = s.digits;
-                            full_acc.algorithm = s.algorithm.clone();
-                            if let Ok(otp) = generate_otp(&full_acc) {
-                                handle_otp_output(otp, label, "Plaintext", stdout_flag, cli.quiet);
+                            if cli.show_secret {
+                                handle_output(s.secret.clone(), label, "Plaintext", "Secret", stdout_flag, cli.quiet);
                                 return Ok(());
+                            } else {
+                                let mut full_acc = acc.clone();
+                                full_acc.secret = s.secret.clone();
+                                full_acc.digits = s.digits;
+                                full_acc.algorithm = s.algorithm.clone();
+                                if let Ok(otp) = generate_otp(&full_acc) {
+                                    handle_output(otp, label, "Plaintext", "OTP", stdout_flag, cli.quiet);
+                                    return Ok(());
+                                }
                             }
                         }
                     }
@@ -289,11 +297,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        if auth == AuthSource::Agent || auth == AuthSource::Auto || auth == AuthSource::Biometric {
+        // Agent check (only for OTP, unless show_secret is false)
+        if !cli.show_secret && (auth == AuthSource::Agent || auth == AuthSource::Auto || auth == AuthSource::Biometric) {
             if AgentClient::ping() {
                 match AgentClient::get_otp(&acc.id) {
                     Ok(otp) => {
-                        handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
+                        handle_output(otp, label, "Agent", "OTP", stdout_flag, cli.quiet);
                         return Ok(());
                     }
                     Err(JkiCoreError::Agent(e)) if e.contains("Agent is locked") => {
@@ -311,7 +320,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         match res {
                             Ok(_source) => {
                                 if let Ok(otp) = AgentClient::get_otp(&acc.id) {
-                                    handle_otp_output(otp, label, "Agent", stdout_flag, cli.quiet);
+                                    handle_output(otp, label, "Agent", "OTP", stdout_flag, cli.quiet);
                                     return Ok(());
                                 }
                             },
@@ -335,8 +344,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        if auth != AuthSource::Agent && auth != AuthSource::Plaintext && auth != AuthSource::Biometric {
-            if auth == AuthSource::Auto && !cli.quiet { eprintln!("Falling back to local decryption..."); }
+        // Local Decryption (Fallback or explicit, and ALWAYS used for show_secret if not plaintext)
+        if auth != AuthSource::Agent && auth != AuthSource::Plaintext && auth != AuthSource::Biometric || cli.show_secret {
+            if auth == AuthSource::Auto && !cli.quiet && !cli.show_secret { eprintln!("Falling back to local decryption..."); }
             let sec_path = JkiPath::secrets_path();
             let interactor = TerminalInteractor;
             
@@ -356,13 +366,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let secrets_map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).context("Secrets parse error")?;
 
             if let Some(s) = secrets_map.get(&acc.id) {
-                let mut full_acc = acc.clone();
-                full_acc.secret = s.secret.clone();
-                full_acc.digits = s.digits;
-                full_acc.algorithm = s.algorithm.clone();
-                
-                let otp = generate_otp(&full_acc).map_err(|e| anyhow!(e))?;
-                handle_otp_output(otp, label, "Local", stdout_flag, cli.quiet);
+                if cli.show_secret {
+                    handle_output(s.secret.clone(), label, "Local", "Secret", stdout_flag, cli.quiet);
+                } else {
+                    let mut full_acc = acc.clone();
+                    full_acc.secret = s.secret.clone();
+                    full_acc.digits = s.digits;
+                    full_acc.algorithm = s.algorithm.clone();
+                    
+                    let otp = generate_otp(&full_acc).map_err(|e| anyhow!(e))?;
+                    handle_output(otp, label, "Local", "OTP", stdout_flag, cli.quiet);
+                }
             } else {
                 return Err(anyhow!("Secret not found for account {}", acc.id));
             }
@@ -396,6 +410,13 @@ mod tests {
         assert!(cli.list);
         assert!(cli.otp);
         assert!(!cli.quiet);
+    }
+
+    #[test]
+    fn test_args_show_secret() {
+        let cli = Cli::try_parse_from(["jki", "google", "-S"]).unwrap();
+        assert!(cli.show_secret);
+        assert_eq!(cli.patterns, vec!["google"]);
     }
 
     #[test]
@@ -453,6 +474,66 @@ mod tests {
             interactive: false,
             list: false,
             otp: false,
+            show_secret: false,
+            quiet: true,
+            stdout: true,
+        };
+        
+        let result = run(cli);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn test_run_show_secret_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("jki_home_show_secret");
+        fs::create_dir_all(&home).unwrap();
+        env::set_var("JKI_HOME", &home);
+
+        let master_key_val = "testpass";
+        let master_key = SecretString::from(master_key_val.to_string());
+        
+        let key_path = home.join("master.key");
+        fs::write(&key_path, master_key_val).unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let acc_id = "test-id";
+        let raw_secret = "JBSWY3DPEHPK3PXP";
+        let metadata = MetadataFile {
+            version: 1,
+            accounts: vec![Account {
+                id: acc_id.to_string(),
+                name: "test@gmail.com".to_string(),
+                issuer: Some("Google".to_string()),
+                account_type: AccountType::Standard,
+                secret: "".to_string(),
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            }]
+        };
+        fs::write(home.join("vault.metadata.json"), serde_json::to_string(&metadata).unwrap()).unwrap();
+
+        let mut secrets_map = HashMap::new();
+        secrets_map.insert(acc_id.to_string(), AccountSecret {
+            secret: raw_secret.to_string(),
+            digits: 6,
+            algorithm: "SHA1".to_string(),
+        });
+        let sec_json = serde_json::to_vec(&secrets_map).unwrap();
+        let encrypted = encrypt_with_master_key(&sec_json, &master_key).unwrap();
+        fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
+
+        let cli = Cli {
+            command: None,
+            patterns: vec!["google".to_string()],
+            auth: AuthSource::Auto,
+            interactive: false,
+            list: false,
+            otp: false,
+            show_secret: true,
             quiet: true,
             stdout: true,
         };
@@ -467,7 +548,7 @@ mod tests {
     fn test_run_auth_agent_skips_plaintext() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempdir().unwrap();
-        let home = temp.path().join("jki_home");
+        let home = temp.path().join("jki_home_agent_skip");
         fs::create_dir_all(&home).unwrap();
         env::set_var("JKI_HOME", &home);
 
@@ -511,6 +592,7 @@ mod tests {
             interactive: false,
             list: false,
             otp: false,
+            show_secret: false,
             quiet: false,
             stdout: true,
         };
