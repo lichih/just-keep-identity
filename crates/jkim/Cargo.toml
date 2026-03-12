@@ -22,6 +22,7 @@ zip = { version = "2.1", features = ["aes-crypto"] }
 clap_complete = "4.4"
 crossterm = "0.27"
 copypasta = "0.10"
+termimad = "0.31"
 
 [dev-dependencies]
 serial_test = "3"

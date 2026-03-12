@@ -35,6 +35,9 @@ use zip::CompressionMethod;
 use zip::AesMode;
 use anyhow::{Context, anyhow};
 
+pub mod assets;
+use assets::AssetId;
+
 #[derive(Parser)]
 #[command(name = "jkim", version, about = "JK Suite Management Hub")]
 pub struct Cli {
@@ -142,6 +145,8 @@ pub enum Commands {
         /// The shell to generate completions for
         shell: clap_complete::Shell,
     },
+    /// Display the JKI user manual
+    Man,
     /// Deduplicate accounts by comparing decrypted secrets
     Dedupe {
         /// Keep specific accounts by index (comma-separated, e.g., 1,3,5)
@@ -352,6 +357,8 @@ fn handle_status() -> anyhow::Result<()> {
     println!("\n[Paths]");
     println!("  - Metadata Path   : {:?}", JkiPath::metadata_path());
     println!("  - Secrets Path    : {:?}", JkiPath::secrets_path());
+
+    AssetId::GuideStatus.render();
     Ok(())
 }
 
@@ -1400,6 +1407,10 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
             clap_complete::generate(*shell, &mut cmd, bin_name, &mut std::io::stdout());
+            AssetId::GuideCompletions.render();
+        }
+        Commands::Man => {
+            AssetId::GuideMan.render();
         }
         Commands::Dedupe { keep, discard, yes } =>
             handle_dedupe(keep, discard, *yes, auth, &interactor, cli.quiet)?,
