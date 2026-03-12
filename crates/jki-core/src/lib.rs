@@ -222,6 +222,53 @@ pub fn search_accounts(accounts: &[Account], patterns: &[String]) -> Vec<Matched
         .collect()
 }
 
+pub struct MatchedSubcommand {
+    pub name: String,
+    pub score: i64,
+}
+
+pub fn resolve_subcommand(input: &str, candidates: &[String]) -> Option<String> {
+    let matcher = SkimMatcherV2::default();
+    let mut matches: Vec<MatchedSubcommand> = candidates.iter()
+        .filter_map(|name| {
+            matcher.fuzzy_match(name, input).map(|score| {
+                // 這裡複用之前的加權邏輯：前綴匹配加分
+                let weighted_score = if name.to_lowercase().starts_with(&input.to_lowercase()) {
+                    score + 100
+                } else {
+                    score
+                };
+                MatchedSubcommand { name: name.clone(), score: weighted_score }
+            })
+        })
+        .collect();
+
+    if matches.is_empty() { return None; }
+
+    matches.sort_by(|a, b| b.score.cmp(&a.score));
+
+    // 壓倒性優勢判定：第一名比第二名高 40 分，或只有一個結果且分數足夠高
+    if matches.len() == 1 && matches[0].score > 30 {
+        Some(matches[0].name.clone())
+    } else if matches.len() > 1 && (matches[0].score - matches[1].score) >= 40 {
+        Some(matches[0].name.clone())
+    } else {
+        // 分數太近，不自動判定，讓呼叫端處理 Did you mean?
+        None
+    }
+}
+
+pub fn get_subcommand_suggestions(input: &str, candidates: &[String]) -> Vec<String> {
+    let matcher = SkimMatcherV2::default();
+    let mut matches: Vec<(String, i64)> = candidates.iter()
+        .filter_map(|name| {
+            matcher.fuzzy_match(name, input).map(|score| (name.clone(), score))
+        })
+        .collect();
+    matches.sort_by(|a, b| b.1.cmp(&a.1));
+    matches.into_iter().take(3).map(|m| m.0).collect()
+}
+
 fn adjust_score(base_score: i64, target: &str, pattern: &str, is_issuer: bool) -> i64 {
     let mut score = base_score;
 
