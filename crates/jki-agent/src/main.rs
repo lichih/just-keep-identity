@@ -184,6 +184,26 @@ fn main() -> anyhow::Result<()> {
     let state = Arc::new(Mutex::new(State::new(auth)));
     let state_clone = Arc::clone(&state);
 
+    // Consolidate Startup Unlock Logic
+    {
+        let mut s = state.lock().map_err(|_| anyhow!("Failed to lock state"))?;
+        let has_plaintext = JkiPath::decrypted_secrets_path().exists();
+
+        // If plaintext exists, we can always try to unlock it if mode is compatible
+        if has_plaintext && (auth == AuthSource::Plaintext || auth == AuthSource::Auto) {
+            match s.unlock(secrecy::SecretString::from("".to_string())) {
+                Ok(src) => println!("Agent auto-unlocked using {}", src),
+                Err(e) => {
+                    if auth == AuthSource::Plaintext {
+                        eprintln!("CRITICAL: Plaintext auto-unlock failed: {}. Exit.", e);
+                        std::process::exit(1);
+                    }
+                    eprintln!("Agent auto-unlock skipped/failed: {}", e);
+                }
+            }
+        }
+    }
+
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
     let shutdown_tx_clone = shutdown_tx.clone();
 
@@ -352,7 +372,30 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>, shutdo
                     VaultState::LockedPersistent(d) => d.auth,
                     VaultState::Unlocked(d) => d.auth,
                 };
-                s.vault = VaultState::Locked(LockedData { auth });
+
+                // Active Reload: If we have the key or it's plaintext, re-read disk NOW.
+                match &s.vault {
+                    VaultState::Unlocked(data) => {
+                        let key = data.master_key.clone();
+                        if let Err(e) = s.unlock(key) {
+                            eprintln!("Reload failed: {}. Reverting to Locked.", e);
+                            s.vault = VaultState::Locked(LockedData { auth });
+                        }
+                    }
+                    VaultState::LockedPersistent(data) => {
+                        let key = data.master_key.clone();
+                        let _ = s.unlock(key);
+                    }
+                    VaultState::Locked(_) => {
+                        // If it's Auto/Plaintext and plaintext exists, try to auto-unlock
+                        let has_encrypted = JkiPath::secrets_path().exists();
+                        let has_plaintext = JkiPath::decrypted_secrets_path().exists();
+                        if (auth == AuthSource::Plaintext && has_plaintext) ||
+                           (auth == AuthSource::Auto && has_plaintext && !has_encrypted) {
+                            let _ = s.unlock(secrecy::SecretString::from("".to_string()));
+                        }
+                    }
+                }
                 Response::Success
             }
             Request::Shutdown => {

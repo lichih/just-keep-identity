@@ -4,12 +4,11 @@ use jki_core::{
     generate_otp, paths::JkiPath,
     Account, AccountSecret, acquire_master_key, decrypt_with_master_key, search_accounts,
     TerminalInteractor, keychain::KeyringStore, AuthSource,
-    JkiCoreError, MatchedAccount,
+    JkiCoreError, MatchedAccount, MetadataFile,
 };
 use std::fs;
 use std::process;
 use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use anyhow::{Context, anyhow};
 use console::style;
 
@@ -59,21 +58,17 @@ enum AgentCommands {
     Ping,
     /// Unlock the agent with master key
     Unlock,
+    /// Force agent to reload data from disk
+    Reload,
     /// Get an OTP via the agent
     Get { id: String },
-}
-
-#[derive(Deserialize, Serialize)]
-struct MetadataFile {
-    accounts: Vec<Account>,
-    version: u32,
 }
 
 fn handle_agent(cmd: &AgentCommands, _auth: AuthSource, _quiet: bool) -> anyhow::Result<()> {
     match cmd {
         AgentCommands::Ping => {
             if AgentClient::ping() { println!("Agent is alive (Pong)"); }
-            else { 
+            else {
                 return Err(anyhow!("Agent is not responding. [Tip] Start it with 'jkim agent start'"));
             }
         }
@@ -94,6 +89,13 @@ fn handle_agent(cmd: &AgentCommands, _auth: AuthSource, _quiet: bool) -> anyhow:
                 Ok(source) => println!("Agent unlocked successfully using {}", source),
                 Err(e) => return Err(anyhow!("Unlock failed: {}", e)),
             }
+        }
+        AgentCommands::Reload => {
+            if !AgentClient::ping() {
+                return Err(anyhow!("Agent is not running."));
+            }
+            AgentClient::reload().map_err(|e| anyhow!("Reload failed: {}", e))?;
+            println!("Agent reloaded successfully.");
         }
         AgentCommands::Get { id } => {
             if !AgentClient::ping() {
@@ -247,14 +249,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         patterns.retain(|x| x != "-");
     }
 
-    let meta_path = JkiPath::metadata_path();
-    if !meta_path.exists() {
-        if !cli.quiet { eprintln!("Error: Metadata not found at {:?}", meta_path); }
-        return Err(anyhow!("Metadata not found"));
-    }
-
-    let meta_content = fs::read_to_string(&meta_path).context("Failed to read metadata")?;
-    let meta_data: MetadataFile = serde_yaml::from_str(&meta_content).context("Metadata parse error")?;
+    let meta_data = MetadataFile::load().context("Failed to load metadata. [Tip] Run 'jkim init' if you haven't.")?;
 
     let raw_args: Vec<String> = std::env::args().collect();
     let has_double_dash = raw_args.iter().any(|arg| arg == "--");
@@ -391,12 +386,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                     Err(JkiCoreError::Agent(e)) if e.contains("Agent is locked") => {
                         if !cli.quiet { eprintln!("Agent is locked. Attempting to unlock..."); }
-                        
+
                         let res = if auth == AuthSource::Biometric {
                             AgentClient::unlock_biometric()
                         } else {
                             let interactor = TerminalInteractor;
-                            let master_key = acquire_master_key(auth, &interactor, Some(&KeyringStore))
+                            // Fix: Don't use 'auth' (which might be Agent) to unlock the Agent itself.
+                            let master_key = acquire_master_key(AuthSource::Auto, &interactor, Some(&KeyringStore))
                                 .map_err(|e| anyhow!("Failed to acquire master key: {}", e))?;
                             AgentClient::unlock(&master_key)
                         };

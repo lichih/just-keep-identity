@@ -14,9 +14,9 @@ use jki_core::{
     keychain::{KeyringStore, SecretStore},
     AuthSource,
     JkiPathExt,
+    MetadataFile,
 };
 use secrecy::ExposeSecret;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -232,12 +232,6 @@ pub enum ConfigCommands {
     Check,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct MetadataFile {
-    accounts: Vec<Account>,
-    version: u32,
-}
-
 fn handle_config(cmd: &ConfigCommands, auth: AuthSource, interactor: &dyn Interactor) -> anyhow::Result<()> {
     match cmd {
         ConfigCommands::Check => {
@@ -251,20 +245,14 @@ fn handle_config(cmd: &ConfigCommands, auth: AuthSource, interactor: &dyn Intera
 
             // 1. Metadata Verification
             print!("Checking metadata YAML... ");
-            if !meta_path.exists() {
-                println!("MISSING");
-                return Err(anyhow!("Metadata not found at {:?}", meta_path));
-            }
-
-            let meta_content = fs::read_to_string(&meta_path).context("Failed to read metadata")?;
-            let metadata: MetadataFile = match serde_yaml::from_str::<MetadataFile>(&meta_content) {
+            let metadata = match MetadataFile::load() {
                 Ok(m) => {
                     println!("OK ({} accounts)", m.accounts.len());
                     m
                 },
                 Err(e) => {
                     println!("ERROR");
-                    eprintln!("  -> Invalid YAML structure: {}", e);
+                    eprintln!("  -> {}", e);
                     return Err(anyhow!("Metadata validation failed."));
                 }
             };

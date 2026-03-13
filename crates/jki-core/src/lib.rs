@@ -9,6 +9,20 @@ pub use paths::JkiPathExt;
 pub mod keychain;
 
 #[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone, PartialEq)]
+pub enum AccountType {
+    Standard,
+    Steam,
+    Blizzard,
+}
+
+#[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone)]
+pub struct AccountSecret {
+    pub secret: String,
+    pub digits: u32,
+    pub algorithm: String,
+}
+
+#[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone, PartialEq)]
 pub struct Account {
     pub id: String,
     pub name: String,
@@ -52,18 +66,21 @@ impl Account {
     }
 }
 
-#[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone, PartialEq)]
-pub enum AccountType {
-    Standard,
-    Steam,
-    Blizzard,
+#[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone)]
+pub struct MetadataFile {
+    pub accounts: Vec<Account>,
+    pub version: u32,
 }
 
-#[derive(SerdeDeserialize, SerdeSerialize, Debug, Clone)]
-pub struct AccountSecret {
-    pub secret: String,
-    pub digits: u32,
-    pub algorithm: String,
+impl MetadataFile {
+    pub fn load() -> Result<Self> {
+        let path = paths::JkiPath::metadata_path();
+        if !path.exists() {
+            return Err(JkiCoreError::Path("Metadata file missing".to_string()));
+        }
+        let content = std::fs::read_to_string(path)?;
+        serde_yaml::from_str(&content).map_err(|e| JkiCoreError::Path(format!("Metadata parse error: {}", e)))
+    }
 }
 
 use std::collections::HashMap;

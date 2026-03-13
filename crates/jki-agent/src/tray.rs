@@ -196,9 +196,29 @@ impl TrayHandler {
                     crate::VaultState::LockedPersistent(d) => d.auth,
                     crate::VaultState::Unlocked(d) => d.auth,
                 };
-                s.vault = crate::VaultState::Locked(crate::LockedData { auth });
+
+                // Active Reload in Tray: Reuse the logic from main.rs via a shared trigger or just re-implement
+                match &s.vault {
+                    crate::VaultState::Unlocked(data) => {
+                        let key = data.master_key.clone();
+                        let _ = s.unlock(key);
+                    }
+                    crate::VaultState::LockedPersistent(data) => {
+                        let key = data.master_key.clone();
+                        let _ = s.unlock(key);
+                    }
+                    crate::VaultState::Locked(_) => {
+                        let has_encrypted = JkiPath::secrets_path().exists();
+                        let has_plaintext = JkiPath::decrypted_secrets_path().exists();
+                        if (auth == jki_core::AuthSource::Plaintext && has_plaintext) ||
+                           (auth == jki_core::AuthSource::Auto && has_plaintext && !has_encrypted) {
+                            let _ = s.unlock(secrecy::SecretString::from("".to_string()));
+                        }
+                    }
+                }
+                self.update_status(&s);
             }
-            println!("Tray: Refresh requested (cache cleared)");
+            println!("Tray: Refresh triggered (Active Disk Re-read)");
             false
         } else if event.id == self.open_config_item.id() {
             let path = JkiPath::home_dir();
