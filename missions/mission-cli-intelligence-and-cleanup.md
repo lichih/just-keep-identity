@@ -28,16 +28,16 @@
 2. [x] **標記與清除 (Mark-and-Sweep)**：
 3. [x] **內部實作紀律**：
 
-### Phase 3: 知識資產與手冊硬化 (Knowledge Asset SSoT)
-1. **建立中控資產庫 (Assets-Based Architecture)**：
+### Phase 3: 知識資產與手冊硬化 (Knowledge Asset SSoT) - [Completed]
+1. [x] **建立中控資產庫 (Assets-Based Architecture)**：
    - 在 `crates/jkim/assets/` 建立模組化 Markdown 資源。
-   - 採用 **高效嵌入策略**：對長篇 guide 使用 `include_bytes!` 以減少 binary size 壓力。
-2. **單一來源引用與渲染 (Rendering SSoT)**：
+   - 採用 **高效嵌入策略**：對長篇 guide 使用 `include_str!` 以減少 runtime 讀取。
+2. [x] **單一來源引用與渲染 (Rendering SSoT)**：
    - **終端渲染**：引入 `termimad` 實作 Markdown 到 ANSI 的轉換。
-   - **手冊合成**：利用 `anstyle_roff` 將 ANSI 樣式字串精準映射為 ROFF 宏，確保 `jkim man` 與終端輸出具備完全一致的語義視覺。
-3. **動態引導與發現**：
+   - **手冊合成 (Deferred)**：利用 `anstyle_roff` 將 ANSI 樣式字串映射為 ROFF (先標記放置，目前依賴終端 `jkim man` 提供服務)。
+3. [x] **動態引導與發現**：
    - `jkim completions` 與 `jkim status` 均引用 assets 進行提示。
-   - 實作 `jkim man` 子指令，透過 `xtask` 預生成的 `.1` 檔案提供離線權威手冊。
+   - 實作 `jkim man` 子指令，提供直覺的離線權威手冊。
 
 ## 3. 指令範例 (Command Examples)
 
