@@ -664,8 +664,53 @@ fn handle_git(default_flag: bool, interactor: &dyn Interactor) -> anyhow::Result
         }
     };
 
+    // 1. Check for plaintext secrets and try auto-encryption
+    let plaintext_path = JkiPath::decrypted_secrets_path();
+    let encrypted_path = JkiPath::secrets_path();
+
+    if plaintext_path.exists() {
+        println!("  - Detected plaintext secrets ({:?})...", plaintext_path.file_name().unwrap_or_default());
+        let store = KeyringStore;
+        match acquire_master_key(AuthSource::Auto, interactor, Some(&store)) {
+            Ok(key) => {
+                println!("  - Master key acquired. Auto-encrypting...");
+                let data = fs::read(&plaintext_path).context("Failed to read plaintext secrets")?;
+                let encrypted = encrypt_with_master_key(&data, &key).context("Encryption failed")?;
+                fs::write(&encrypted_path, encrypted).context("Failed to write encrypted secrets")?;
+                fs::remove_file(&plaintext_path).context("Failed to remove plaintext secrets")?;
+                println!("  - Encrypted and secured vault secrets.");
+            }
+            Err(_) => {
+                eprintln!("{}", style("  ! Warning: Plaintext secrets found but could not be auto-encrypted.").yellow().bold());
+                eprintln!("    Only encrypted vault secrets are allowed in synchronization.");
+            }
+        }
+    }
+
     println!("  - Stage changes...");
-    git::add_all(&config_dir).context("Failed to add files")?;
+    let mut files_to_stage = Vec::new();
+
+    if config_dir.join("vault.metadata.yaml").exists() {
+        files_to_stage.push("vault.metadata.yaml".to_string());
+    }
+
+    if encrypted_path.exists() {
+        files_to_stage.push("vault.secrets.bin.age".to_string());
+    }
+
+    if config_dir.join("config.yaml").exists() {
+        files_to_stage.push("config.yaml".to_string());
+    }
+
+    if config_dir.join(".gitignore").exists() {
+        files_to_stage.push(".gitignore".to_string());
+    }
+
+    if files_to_stage.is_empty() {
+        println!("  - No files to stage.");
+    } else {
+        git::add(&config_dir, &files_to_stage).context("Failed to stage files")?;
+    }
 
     println!("  - Commit...");
     let now = chrono::Local::now();
