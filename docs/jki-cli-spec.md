@@ -68,7 +68,10 @@
 `jkim init [--force]`
 *   初始化 JKI 工作目錄與 Git 儲存庫。使用 `-f` 可執行物理重置。
 
-### 3.4 帳號管理 (add)
+### 3.4 Git 同步 (git)
+`jkim git`
+*   執行標準同步流程：`git add .` -> `git commit` -> `git pull --rebase` -> `git push`。
+*   支援別名 `sync` 以維持相容性。
 `jkim add [NAME] [ISSUER] [--secret <SECRET>] [--uri <URI>] [-f/--force] [-S/--show-secret] [--stdout]`
 *   手動新增 OTP 帳號。
 *   **物理握手 (Live Handshake)**：

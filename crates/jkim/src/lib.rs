@@ -94,7 +94,8 @@ pub enum Commands {
         stdout: bool,
     },
     /// Sync changes to Git (add, commit, pull --rebase, push)
-    Sync,
+    #[command(alias = "sync")]
+    Git,
     /// Manage the jki-agent background process
     #[command(subcommand)]
     Agent(AgentCommands),
@@ -599,7 +600,7 @@ fn handle_master_key(cmd: &MasterKeyCommands, auth: AuthSource, default_flag: bo
                 let _ = git::commit(&config_dir, "jki: master key rotation");
                 println!("Changes committed to Git.");
             } else {
-                println!("Note: You may want to run 'jkim sync' to backup your new encrypted vault.");
+                println!("Note: You may want to run 'jkim git' to backup your new encrypted vault.");
             }
         }
     }
@@ -653,8 +654,9 @@ fn handle_keychain(cmd: &KeychainCommands, interactor: &dyn Interactor) -> anyho
     Ok(())
 }
 
-fn handle_sync(default_flag: bool, interactor: &dyn Interactor) -> anyhow::Result<()> {
+fn handle_git(default_flag: bool, interactor: &dyn Interactor) -> anyhow::Result<()> {
     let config_dir = JkiPath::home_dir();
+    println!("--- Git Synchronization ---\n");
     println!("Syncing JKI Home at {:?}...", config_dir);
 
     let status = match git::check_status(&config_dir) {
@@ -1551,7 +1553,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Init { force } => handle_init(*force)?,
         Commands::Add { name, issuer, secret, uri, force, show_secret, stdout } => 
             handle_add(name, issuer, secret, uri, *force, *show_secret, *stdout, auth, cli.default, cli.quiet, &interactor)?,
-        Commands::Sync => handle_sync(cli.default, &interactor)?,
+        Commands::Git => handle_git(cli.default, &interactor)?,
         Commands::Edit => handle_edit()?,
         Commands::Decrypt { force, keep, remove_key } => handle_decrypt(*force, *keep, *remove_key, cli.default, auth, &interactor)?,
         Commands::Encrypt { force } => handle_encrypt(*force, cli.default, auth, &interactor)?,
