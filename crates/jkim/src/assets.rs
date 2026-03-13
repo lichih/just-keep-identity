@@ -26,11 +26,13 @@ impl AssetId {
         let (width, _) = termimad::terminal_size();
         let content = self.content();
 
-        // Print a subtle separator
-        println!("\n{}", style("─".repeat(width as usize)).dim());
+        // Print a subtle separator to stderr to avoid polluting stdout
+        eprintln!("\n{}", style("─".repeat(width as usize)).dim());
 
-        skin.print_text(content);
+        // Use write_text_on to specify stderr as the output for human instructions
+        let mut stderr = std::io::stderr();
+        let _ = skin.write_text_on(&mut stderr, content);
 
-        println!("{}", style("─".repeat(width as usize)).dim());
+        eprintln!("{}", style("─".repeat(width as usize)).dim());
     }
 }

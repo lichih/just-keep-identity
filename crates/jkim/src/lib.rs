@@ -18,6 +18,7 @@ use jki_core::{
 };
 use secrecy::ExposeSecret;
 use std::collections::HashMap;
+use console::style;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -142,6 +143,9 @@ pub enum Commands {
     Completions {
         /// The shell to generate completions for
         shell: clap_complete::Shell,
+        /// Path to write the script to. Use "-o -" for stdout.
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Display the JKI user manual
     Man,
@@ -1560,11 +1564,40 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::ImportWinauth { file, overwrite, force_new_vault } =>
             handle_import_winauth(file, *overwrite, auth, cli.default, &interactor, *force_new_vault)?,
         Commands::Export { output } => handle_export(output, auth, &interactor)?,
-        Commands::Completions { shell } => {
+        Commands::Completions { shell, output } => {
             let mut cmd = Cli::command();
             let bin_name = cmd.get_name().to_string();
-            clap_complete::generate(*shell, &mut cmd, bin_name, &mut std::io::stdout());
-            AssetId::GuideCompletions.render();
+
+            match output {
+                Some(ref o) if o == "-" => {
+                    // Output directly to stdout
+                    clap_complete::generate(*shell, &mut cmd, bin_name, &mut std::io::stdout());
+                }
+                Some(ref path_str) => {
+                    // Write to file
+                    let path = PathBuf::from(path_str);
+                    if let Some(parent) = path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let mut file = fs::File::create(&path).context(format!("Failed to create completion file at {:?}", path))?;
+                    clap_complete::generate(*shell, &mut cmd, bin_name, &mut file);
+                    eprintln!("{} Completion script for {:?} written to {:?}", style("Success:").green().bold(), shell, path);
+                }
+                None => {
+                    // Guide mode (default): No stdout pollution
+                    AssetId::GuideCompletions.render();
+                    let shell_name = format!("{:?}", shell).to_lowercase();
+                    eprintln!("\n{}", style("Example usage:").yellow().bold());
+                    eprintln!("  jkim completions {} -o ~/.jki/jkim_completion.{}", shell_name, match shell {
+                        clap_complete::Shell::Bash => "bash",
+                        clap_complete::Shell::Zsh => "zsh",
+                        clap_complete::Shell::Fish => "fish",
+                        clap_complete::Shell::PowerShell => "ps1",
+                        _ => "completions"
+                    });
+                    eprintln!("  jkim completions {} -o - > jkim_completions.{}", shell_name, shell_name);
+                }
+            }
         }
         Commands::Man => {
             AssetId::GuideMan.render();
