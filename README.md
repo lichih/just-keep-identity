@@ -5,6 +5,14 @@
 
 [繁體中文](README.zh-TW.md)
 
+## 📖 The Backstory
+
+I built JKI because I moved from Windows to macOS and couldn't find an MFA manager that fit my workflow. I was a long-time WinAuth user, but on macOS, everything was either behind a paywall or just felt slow.
+
+Even with a GUI search, the friction of taking hands off the keyboard to click a search box and type felt wrong for a CLI-focused workflow. Sifting through 30+ entries in a list should be a matter of milliseconds, not mouse movements. I wanted something where finding an account was faster than the time it takes for my hands to leave the home row.
+
+JKI was built to be a "Zero-Cloud" option. Why bother with another proprietary cloud service when we already have Git? JKI uses your own Git infrastructure (GitHub, or your private server) for syncing metadata, while keeping secrets pinned to your hardware.
+
 `jki` is an identity authorization tool designed specifically for engineers. It's not just about managing TOTP; it's about completing authentication with minimal keystrokes without ever leaving your terminal.
 
 ## 🚀 Core Philosophy
@@ -90,7 +98,8 @@ JKI adopts a **"Separation of Concerns"** strategy to ensure maximum security wi
 
 ### Why this design?
 - **Zero Disk Leak**: Your actual secrets are never written to disk in plaintext. They are stored in your OS-native vault (macOS Keychain / Linux Secret Service).
-- **Safe Syncing**: You can safely push your JKI Git repository to a private cloud. Even if the repo is compromised, the attacker only sees *who* you have accounts with, not the *keys* to access them.
+- **Git as Your Cloud**: Why entrust your keys to a 3rd-party SaaS? Use your own Git infrastructure (GitHub, GitLab, or a private server) to sync metadata while keeping secrets hardware-bound.
+- **Safe Syncing**: Even if your Git repository is compromised, the attacker only sees *who* you have accounts with, not the *keys* to access them.
 - **Exclusion Policy**: JKI's default `.gitignore` automatically excludes plaintext files (`vault.json`, `master.key`, `*.txt`).
 - **Auto-Hardening Sync**: When running `jkim git sync`, JKI intelligently detects plaintext secrets. If a Master Key is available (via Agent or Keychain), it will **automatically encrypt your vault and secure it** before staging, ensuring your secrets are always protected during transport.
 
