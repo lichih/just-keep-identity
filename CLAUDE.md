@@ -35,7 +35,6 @@ To ensure tests and CI/CD are not interrupted by OS authorization prompts (e.g.,
 - **Anti-Ignore Logic**: Explicitly authorized to use `.geminiignore` (or `.agentignore`) as an "allow-list" to read files ignored by git but necessary for development (e.g., `data/private/`, `*.stable`).
 - **Safety**: Never include contents from ignored or private directories in git commits.
 
-### 2.4 Mandatory Safety Audits
-- **Pre-Commit Hook**: Before any `git commit`, `git tag`, or `git push`, the agent **MUST** execute `./scripts/security-audit.sh` to programmatically verify that no sensitive files (e.g., `private/`, `master.key`) have been accidentally untracked or leaked.
-- **Zero-Tolerance for Over-intervention**: When editing `.gitignore` or `.env` files, use the **absolute minimum** change required. Never delete existing exclusion patterns unless explicitly requested.
-- **Post-Edit Verification**: After modifying any exclusion rules, immediately run `git status` to ensure no sensitive files have surfaced as "untracked".
+### 2.5 Strategic Edit Mandates (Atomic Edits)
+- **Line-Count Integrity**: The `edit` tool now **requires** `expectedOldLineCount`. The agent MUST use the `Read` tool first to verify the exact line count of the `oldString` before any modification.
+- **Checksum Logic**: If the actual lines in the file don't match `expectedOldLineCount`, the edit will fail programmatically, preventing accidental over-erasing.
