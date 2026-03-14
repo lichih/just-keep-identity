@@ -38,3 +38,5 @@ To ensure tests and CI/CD are not interrupted by OS authorization prompts (e.g.,
 ### 2.5 Strategic Edit Mandates (Atomic Edits)
 - **Line-Count Integrity**: The `edit` tool now **requires** `expectedOldLineCount`. The agent MUST use the `Read` tool first to verify the exact line count of the `oldString` before any modification.
 - **Checksum Logic**: If the actual lines in the file don't match `expectedOldLineCount`, the edit will fail programmatically, preventing accidental over-erasing.
+- **Safety Guard**: The tool will block edits that remove sensitive patterns (like `# <SECURE>`, `# Private`) unless they are explicitly preserved in the `newString`.
+- **Diagnostics**: If an edit fails or succeeds, the tool provides physical coordinates (line numbers) and hints about format mismatches (like LF/CRLF) to help you correct your intent.
