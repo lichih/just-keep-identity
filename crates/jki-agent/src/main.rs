@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "tray")]
 mod tray;
 
 #[derive(Parser, Debug)]
@@ -195,6 +196,7 @@ fn main() -> anyhow::Result<()> {
     println!("jki-agent starting (auth: {:?})", auth);
 
     let state = Arc::new(Mutex::new(State::new(auth)));
+    #[cfg(feature = "tray")]
     let state_clone = Arc::clone(&state);
 
     // Consolidate Startup Unlock Logic
@@ -218,7 +220,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+    #[cfg(feature = "tray")]
     let shutdown_tx_clone = shutdown_tx.clone();
+    #[cfg(not(feature = "tray"))]
+    let _ = shutdown_rx; // Silently consume in headless mode if not used
 
     if auth == AuthSource::Biometric {
         use jki_core::keychain::{KeyringStore, SecretStore};
@@ -241,71 +246,91 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    thread::spawn(move || {
-        let listener = LocalSocketListener::bind(name).expect("Failed to bind socket");
-        println!("jki-agent listening on {:?}", JkiPath::agent_socket_path());
-        for stream in listener.incoming() {
-            match stream {
-                Ok(s) => {
-                    let st = Arc::clone(&state_clone);
-                    let tx = shutdown_tx_clone.clone();
-                    thread::spawn(move || {
-                        if let Err(e) = handle_client(s, st, tx) {
-                            eprintln!("Error handling client: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Error accepting connection: {}", e);
-                }
-            }
-        }
-    });
-
-    use muda::MenuEvent;
-    use tao::event::Event;
-    use tao::event_loop::{ControlFlow, EventLoop};
-
-    let mut event_loop = EventLoop::new();
-
-    #[cfg(target_os = "macos")]
+    #[cfg(feature = "tray")]
     {
-        use tao::platform::macos::EventLoopExtMacOS;
-        event_loop.set_activation_policy(tao::platform::macos::ActivationPolicy::Accessory);
-    }
+        use muda::MenuEvent;
+        use tao::event::Event;
+        use tao::event_loop::{ControlFlow, EventLoop};
 
-    let (tray_handler, _menu) = tray::TrayHandler::new();
+        thread::spawn(move || {
+            run_socket_server(name, state_clone, shutdown_tx_clone);
+        });
 
-    {
-        let s = state.lock().map_err(|_| anyhow!("Failed to lock state"))?;
-        tray_handler.update_status(&s);
-    }
+        let mut event_loop = EventLoop::new();
 
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(500));
-
-        if shutdown_rx.try_recv().is_ok() {
-            *control_flow = ControlFlow::Exit;
-            return;
+        #[cfg(target_os = "macos")]
+        {
+            use tao::platform::macos::EventLoopExtMacOS;
+            event_loop.set_activation_policy(tao::platform::macos::ActivationPolicy::Accessory);
         }
 
-        if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
-            if tray_handler.handle_menu_event(menu_event, Arc::clone(&state)) {
-                *control_flow = ControlFlow::Exit;
-            }
-            let s = state.lock().unwrap();
+        let (tray_handler, _menu) = tray::TrayHandler::new();
+
+        {
+            let s = state.lock().map_err(|_| anyhow!("Failed to lock state"))?;
             tray_handler.update_status(&s);
         }
 
-        match event {
-            Event::MainEventsCleared => {
-                let mut s = state.lock().unwrap();
-                s.check_ttl();
+        event_loop.run(move |event, _, control_flow| {
+            *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(500));
+
+            if shutdown_rx.try_recv().is_ok() {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+
+            if let Ok(menu_event) = MenuEvent::receiver().try_recv() {
+                if tray_handler.handle_menu_event(menu_event, Arc::clone(&state)) {
+                    *control_flow = ControlFlow::Exit;
+                }
+                let s = state.lock().unwrap();
                 tray_handler.update_status(&s);
             }
-            _ => (),
+
+            match event {
+                Event::MainEventsCleared => {
+                    let mut s = state.lock().unwrap();
+                    s.check_ttl();
+                    tray_handler.update_status(&s);
+                }
+                _ => (),
+            }
+        });
+    }
+
+    #[cfg(not(feature = "tray"))]
+    {
+        println!("jki-agent running in headless mode (no tray)");
+        run_socket_server(name, state, shutdown_tx);
+    }
+
+    #[cfg(not(feature = "tray"))]
+    Ok(())
+}
+
+fn run_socket_server(
+    name: String,
+    state: Arc<Mutex<State>>,
+    shutdown_tx: std::sync::mpsc::Sender<()>,
+) {
+    let listener = LocalSocketListener::bind(name).expect("Failed to bind socket");
+    println!("jki-agent listening on {:?}", JkiPath::agent_socket_path());
+    for stream in listener.incoming() {
+        match stream {
+            Ok(s) => {
+                let st = Arc::clone(&state);
+                let tx = shutdown_tx.clone();
+                thread::spawn(move || {
+                    if let Err(e) = handle_client(s, st, tx) {
+                        eprintln!("Error handling client: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!("Error accepting connection: {}", e);
+            }
         }
-    });
+    }
 }
 
 fn handle_client(

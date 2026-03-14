@@ -8,6 +8,7 @@ INSTALL_DIR="${HOME}/.local/bin"
 SILENT=false
 UPDATE_PATH=true
 CORE_ONLY=false
+HEADLESS=false
 SKIP_BUILD=false
 
 # Parse arguments
@@ -16,6 +17,7 @@ while [[ "$#" -gt 0 ]]; do
         --silent) SILENT=true; UPDATE_PATH=false ;;
         --no-path) UPDATE_PATH=false ;;
         --core-only) CORE_ONLY=true ;;
+        --headless) HEADLESS=true ;;
         --skip-build) SKIP_BUILD=true ;;
         --install-dir) INSTALL_DIR="$2"; shift ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
@@ -38,6 +40,9 @@ else
     echo "Building binaries..."
     if [ "$CORE_ONLY" = true ]; then
         cargo build --release -p jki -p jkim
+    elif [ "$HEADLESS" = true ]; then
+        cargo build --release --workspace --exclude jki-agent
+        cargo build --release -p jki-agent --no-default-features
     else
         cargo build --release --workspace
     fi

@@ -27,6 +27,11 @@ release:
 release-core:
 	cargo build --release -p jki -p jkim
 
+## release-headless: Build workspace binaries without GUI/Tray (for Linux/Windows)
+release-headless:
+	cargo build --release --workspace --exclude jki-agent
+	cargo build --release -p jki-agent --no-default-features
+
 ## dev: Build debug binaries or run cargo watch (if installed)
 dev:
 	@if command -v cargo-watch >/dev/null; then \

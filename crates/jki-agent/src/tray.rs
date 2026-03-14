@@ -1,3 +1,4 @@
+#![cfg(feature = "tray")]
 use crate::State;
 use jki_core::keychain::{KeyringStore, SecretStore};
 use jki_core::paths::JkiPath;

@@ -73,6 +73,9 @@ brew install jki
 git clone https://github.com/lichih/just-keep-identity.git
 cd just-keep-identity
 make install
+
+# 針對 Linux/Windows (無介面代理模式):
+./install.sh --headless
 ```
 
 ---

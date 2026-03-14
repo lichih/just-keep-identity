@@ -72,6 +72,9 @@ Ensure you have the [Rust toolchain](https://rustup.rs/) installed:
 git clone https://github.com/lichih/just-keep-identity.git
 cd just-keep-identity
 make install
+
+# For Linux/Windows (Headless Agent):
+./install.sh --headless
 ```
 
 ---

@@ -19,7 +19,7 @@ secrecy = { version = "0.8", features = ["serde"] }
 rpassword = "7.3"
 atty = "0.2.14"
 crossterm = "0.29.0"
-keyring = { version = "3.0", features = ["apple-native", "windows-native"], optional = true }
+keyring = { version = "3.0", features = ["apple-native", "windows-native", "linux-native"], optional = true }
 interprocess = "1.2.1"
 clap = { version = "4.4", features = ["derive"] }
 fuzzy-matcher = "0.3"

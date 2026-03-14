@@ -13,10 +13,14 @@ serde_json = "1.0"
 anyhow = "1.0"
 secrecy = "0.8"
 notify-rust = "4"
-tray-icon = "0.19"
-tao = "0.30"
-muda = "0.15"
-image = "0.25"
+tray-icon = { version = "0.19", optional = true }
+tao = { version = "0.30", optional = true }
+muda = { version = "0.15", optional = true }
+image = { version = "0.25", optional = true }
+
+[features]
+default = ["tray"]
+tray = ["dep:tray-icon", "dep:tao", "dep:muda", "dep:image"]
 
 [dev-dependencies]
 tempfile = "3"
