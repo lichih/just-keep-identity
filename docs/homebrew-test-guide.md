@@ -17,40 +17,52 @@ mkdir -p "$JKI_PURITY_DIR"
 curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C "$JKI_PURITY_DIR"
 ```
 
-## 2. 配置臨時環境變數
+## 2. 配置臨時環境變數與 Tap
 
-我們需要暫時遮蔽系統的 brew，並讓新的 brew 知道它的家在哪裡。
+我們必須讓臨時的 brew 知道它的家在哪裡，並連結正式的 Tap。
 
 ```bash
-# 封閉環境設定
-export PATH="$JKI_PURITY_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin" # 只留系統基礎路徑與新的 brew
+# 1. 封閉環境設定
+export PATH="$JKI_PURITY_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export HOMEBREW_PREFIX="$JKI_PURITY_DIR"
 export HOMEBREW_CELLAR="$JKI_PURITY_DIR/Cellar"
 export HOMEBREW_REPOSITORY="$JKI_PURITY_DIR"
 export HOMEBREW_CACHE="$JKI_PURITY_DIR/cache"
 
-# 驗證目前使用的 brew 位置 (應該要指向 /tmp/...)
+# 2. 建立本地 Tap 目錄並連結 (Homebrew 4.0+ 必須有 Tap 結構)
+# 這樣可以直接測試你本地還沒 push 的 jki.rb
+export TAP_DEST="$JKI_PURITY_DIR/Library/Taps/lichih/homebrew-jki/Formula"
+mkdir -p "$TAP_DEST"
+cp /Users/lichih/code/just-keep-identity/docs/homebrew-jki.rb "$TAP_DEST/jki.rb"
+
+# 3. 驗證目前使用的 brew 位置
 which brew
 brew --version
 ```
 
 ## 3. 執行安裝測試
 
-現在你在一個完全「空無一物」的 Homebrew 環境中了。
-
-### A. 測試二進位下載安裝 (Bottle)
+### A. 測試正式 Tap 安裝 (從 GitHub)
+如果你想測試已經 Push 到 GitHub 的版本：
 ```bash
-# 使用專案中的 Formula 檔案
-brew install --verbose --debug ./docs/homebrew-jki.rb
+brew tap lichih/jki
+brew install jki
 ```
 
-### B. 測試源碼編譯 (Source Build)
+### B. 測試本地修改 (Pre-push 驗證)
+如果你已經執行了上面的 `cp` 步驟，直接執行安裝即可：
 ```bash
-# 移除剛才的安裝
-brew uninstall jki
+# 這裡會優先使用你剛才複製到 Library/Taps/... 的本地 jki.rb
+brew install --verbose --debug jki
 
-# 測試源碼編譯流程
-brew install --build-from-source --verbose --debug /Users/lichih/code/just-keep-identity/docs/homebrew-jki.rb
+# 驗證二進位檔路徑
+"$JKI_PURITY_DIR/bin/jki" --version
+```
+
+### C. 測試源碼編譯 (Source Build)
+```bash
+brew uninstall jki
+brew install --build-from-source --verbose --debug jki
 ```
 
 ## 4. 為什麼這個方案更可信？
