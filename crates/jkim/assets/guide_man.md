@@ -4,7 +4,7 @@ ID: @JKI_ASSET(guide_man)
 `jki` is a minimalist, high-speed identity management suite designed for power users.
 
 ## Core Philosophy
-1. **Speed**: Sub-3ms cold start.
+1. **Speed**: Near-instant cold start.
 2. **Minimalism**: Focus on search and OTP generation.
 3. **Integrity**: Single Source of Truth for metadata and secrets.
 

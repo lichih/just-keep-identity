@@ -1,4 +1,4 @@
-# **Just Keep Identity (jki)：JK Suite 極速 MFA 數位金庫**
+# **Just Keep Identity (jki)：JK Suite 高效 MFA 數位金庫**
 
 ## **產品需求 (PRD) 與技術規格 (Spec) 文件 - V29 (ACL 授權優化與原生效能版)**
 

@@ -8,7 +8,7 @@
 ## 🚀 核心宣傳亮點 (The Core Hooks)
 
 1.  **Velocity (極致速度)**：
-    - 查詢與產碼全流程 < 3ms。
+    - 查詢與產碼全流程極速反應。
     - 專為終端機重度使用者設計的 "Micro-Roll" 一手操作邏輯。
 2.  **Physical Integrity (物理安全性)**：
     - **Local-first**：秘密僅存在於 OS 原生 Keyring (macOS Keychain / Linux Secret Service)，絕對拒絕雲端。
@@ -22,14 +22,14 @@
 ## 📝 Hacker News (Show HN) 計畫
 
 ### 建議標題 (Suggested Titles)
-- `Show HN: JKI – A millisecond-speed MFA manager for CLI power users`
+- `Show HN: JKI – A low-friction MFA manager for CLI power users`
 - `Show HN: JKI – Local-first terminal 2FA built in Rust with OS Keyring integration`
 
 ### 第一則評論草稿 (Introductory Comment)
 > "I built JKI because I was frustrated with the friction of traditional 2FA apps. As a developer, I live in the terminal, and I wanted my identity tokens to be as fast as my aliases.
 > 
 > Key features:
-> - **Speed**: Search and copy in milliseconds.
+> - **Speed**: Search and copy with minimal keystrokes.
 > - **Privacy**: It leverages your OS native keychain. No cloud, no proprietary sync.
 > - **Distribution**: Officially signed and notarized for macOS. Available via Homebrew.
 > 
