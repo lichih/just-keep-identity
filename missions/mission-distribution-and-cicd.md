@@ -18,7 +18,8 @@
 - [x] **驗證安裝**：已完成。透過 `docs/homebrew-test-guide.md` 驗證了隔離環境下的 Tap 安裝。
 
 ### Phase 3: 多平台分級打包 (Tiered Packaging)
-- [ ] **認證鏈自動化 (macOS)**：整合 `.env.macos` 資訊到發布流程，確保正式版具備 **Apple 簽名與公證**。
+- [x] **認證鏈自動化 (macOS)**：已整合 `make sign-bins` 與 `make dist-macos`。
+- [x] **安裝腳本優化**：`install.sh` 已支援 `--skip-build` 以保留簽名。
 - [ ] **CLI-Only 發布 (Win/Linux)**：優化編譯配置，為非 macOS 平台產出輕量化、無 Agent 的純 CLI 二進位檔。
 - [ ] **Windows 信任度解決方案**：研究如何在無簽名情況下降低 SmartScreen 攔截感。
 

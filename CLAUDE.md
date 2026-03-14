@@ -28,7 +28,7 @@ To ensure tests and CI/CD are not interrupted by OS authorization prompts (e.g.,
 ### 2.1 Engineering Specifics
 - **Stable Sorting Rule**: Intelligence features (highlighting, auto-selection) must NOT disrupt the stable vault-order indexing.
 - **Diagnostics**: Prioritize feedback transparency (e.g., showing score gaps in ambiguous matches).
-- **Tooling**: Authorized to use `make release`, `make install`, and `make test-all` for verification. Use `make cov` for accurate coverage reports via `llvm-cov`.
+- **Tooling**: Authorized to use `make release`, `make install`, and `make test-all` for verification. Use `make cov` for accurate coverage reports via `llvm-cov`. Use `codesign -dvvv <bin>` to verify signatures.
 
 ### 2.2 Data Access Privileges
 - **Dynamic Visibility**: Respect `.gitignore` to avoid reading unnecessary or large binary files (e.g., `target/`).
