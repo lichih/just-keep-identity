@@ -1,7 +1,7 @@
 # Mission: JKI Launch & Community Outreach (Showcase Strategy)
 
 ## 🎯 目標 (Goals)
-將 JKI 從開發階段推向全球開源與安全社群。不僅是展示一個工具，更是展示一套關於「極致速度」、「物理安全性」與「AI 協作誠信」的工程理念。
+將 JKI 從開發階段推向全球開源與安全社群。不僅是展示一個工具，更是展示一套關於「極致速度」、「物理安全性」與「現代工程品質」的工程理念。
 
 ---
 
@@ -13,8 +13,9 @@
 2.  **Physical Integrity (物理安全性)**：
     - **Local-first**：秘密僅存在於 OS 原生 Keyring (macOS Keychain / Linux Secret Service)，絕對拒絕雲端。
     - **Zero Disk Leak**：秘密永遠不會以明文形式寫入磁碟。
-3.  **Agentic Safety (AI 協作安全 - 獨特賣點)**：
-    - **CAE (Coordinate-Anchored Edit)**：內建物理座標鎖定機制。這是我們在開發過程中，針對 AI Agent 可能造成的檔案抹除風險，所發展出的一套確定性安全標準。
+3.  **Modern Onboarding (專業發布流程)**：
+    - **Official Distribution**：提供經過官方簽名與公證的 macOS 套件，避免 Gatekeeper 警告。
+    - **Verified Pipeline**：高測試覆蓋率（>65%）確保核心安全路徑的絕對穩定。
 
 ---
 
@@ -30,16 +31,16 @@
 > Key features:
 > - **Speed**: Search and copy in milliseconds.
 > - **Privacy**: It leverages your OS native keychain. No cloud, no proprietary sync.
-> - **Safety**: We implemented a 'Coordinate-Anchored Edit' (CAE) standard during development to ensure that even when using AI Agents for coding, our critical security configs (like .gitignore) can never be silently erased.
+> - **Distribution**: Officially signed and notarized for macOS. Available via Homebrew.
 > 
-> It's officially signed and notarized for macOS. Would love to hear your thoughts on the UX and the local-first approach!"
+> Would love to hear your thoughts on the UX and the local-first approach!"
 
 ---
 
 ## 🤖 Reddit 分享策略
 
 ### r/rust (技術深度)
-- **焦點**：分享如何使用 Trait 系統達成 90% 以上的 Keychain 測試覆蓋率，以及 CAE 引擎的實作細節。
+- **焦點**：分享如何使用 Trait 系統達成 90% 以上的 Keychain 測試覆蓋率。
 - **亮點**：Rust + IPC + Security Audit Scripts。
 
 ### r/commandline (人體工學)
