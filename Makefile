@@ -69,6 +69,10 @@ snapshot-clean:
 install:
 	./install.sh
 
+## install-signed: Install existing signed binaries without re-building
+install-signed:
+	./install.sh --skip-build
+
 ## install-core: Build and deploy ONLY CORE binaries (jki, jkim)
 install-core:
 	./install.sh --core-only
