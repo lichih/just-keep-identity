@@ -1,15 +1,15 @@
 class Jki < Formula
-  desc "Extreme speed MFA & Identity Session Manager for CLI Power Users"
-  homepage "https://github.com/creart-tw/just-keep-identity"
+  desc "High-speed MFA & Identity Session Manager for CLI Power Users"
+  homepage "https://github.com/lichih/just-keep-identity"
   version "0.1.0-alpha"
 
   if OS.mac? && Hardware::CPU.arm?
-    url "https://github.com/creart-tw/just-keep-identity/releases/download/v0.1.0-alpha/jki-macos-arm64.tar.gz"
-    sha256 "578c71a978fdeb82cd1b21050f760473891fd624c05114b489db4ff1d747e632"
+    url "https://github.com/lichih/just-keep-identity/releases/download/v#{version}/jki-macos-arm64.tar.gz"
+    sha256 "89d75f6fcb0a405d9a51dfb552ff7e6bddb9cde8d18569bddfe5a95532061854" # TODO: Update after release
   else
     # Fallback to source build for other architectures
-    url "https://github.com/creart-tw/just-keep-identity/archive/refs/tags/v0.1.0-alpha.tar.gz"
-    sha256 "REPLACE_WITH_SOURCE_SHA256"
+    url "https://github.com/lichih/just-keep-identity/archive/refs/tags/v#{version}.tar.gz"
+    sha256 "0000000000000000000000000000000000000000000000000000000000000000" # TODO: Update after release
     depends_on "rust" => :build
   end
 
@@ -21,10 +21,9 @@ class Jki < Formula
       bin.install "jki-agent"
     else
       # Build from source
-      system "cargo", "build", "--release", "--workspace"
-      bin.install "target/release/jki"
-      bin.install "target/release/jkim"
-      bin.install "target/release/jki-agent"
+      system "cargo", "install", *std_cargo_args(path: "crates/jki")
+      system "cargo", "install", *std_cargo_args(path: "crates/jkim")
+      system "cargo", "install", *std_cargo_args(path: "crates/jki-agent")
     end
   end
 

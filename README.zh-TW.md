@@ -12,7 +12,7 @@
 *   **極速感 (Velocity)**: 查詢器 Cold Start < 3ms。
 *   **Fuzzy Intelligence**: 支援模糊搜尋與匹配字元高亮顯示，即使記不清全名也能瞬間定位。
 *   **Smart Agent**: 智慧背景代理，支援明文金庫自動解鎖與磁碟資料主動同步 (Active Reload)。
-*   **物理隔離與安全**: 基於 `age` 加密，所有秘密僅存於本地或你的私有 Git，絕對拒絕雲端。
+*   **物理隔離與安全**: 基於 OS Keyring，所有秘密鎖在系統的安全保險箱中，絕對拒絕雲端。
 *   **人體工學 (Ergonomics)**: 專門優化的 Micro-Roll 指令集，單手即可完成產碼。
 
 ## 技術架構 (Technical DNA)
@@ -20,9 +20,9 @@
 `jki` 採用 Rust 構建，追求極致的穩定性與安全性：
 
 *   **智慧型代理 (Intelligent Agent)**: `jki-agent` 持有解密後的記憶體快取。它是系統中唯一與 OS Keyring 互動的門戶。
-*   **雙模金庫 (Dual-Mode Vault)**: 
-    *   `Plaintext Mode`: 追求極速，讀取本地加密環境下的明文快取。
-    *   `Encrypted Mode`: 採用 `age` 加密，適合 Git 同步與長期儲存。
+*   **混合金庫 (Hybrid Vault)**: 
+    *   **元數據 (Metadata)**: 透過本地檔案管理，支援 Git 版本控制。
+    *   **金鑰秘密 (Secrets)**: 直接與 OS 原生 Keyring (macOS Keychain, Linux Secret Service) 整合。
 *   **Unix-Friendly**: 完美的管道支援 (`stdout -`)，輕鬆與 `ssh`, `git`, `kubectl` 等工具整合。
 
 ## 快速開始 (Quick Start)
@@ -55,14 +55,47 @@ jkim git sync
 
 ---
 
-## 📦 安裝方式 (macOS)
+## 📦 安裝方式
 
+### 方案 A：Homebrew (macOS 推薦)
 ```bash
-# 複製並安裝
-git clone https://github.com/creart-tw/just-keep-identity.git
+brew tap lichih/jki
+brew install jki
+```
+
+### 方案 B：源碼編譯 (開發者/Linux)
+請確保你已安裝 [Rust 工具鏈](https://rustup.rs/)：
+```bash
+git clone https://github.com/lichih/just-keep-identity.git
 cd just-keep-identity
 make install
 ```
+
+---
+
+## 🛡 安全架構與心理模型 (Security Architecture)
+
+JKI 採用**「關注點分離」**策略，在確保最高安全性的同時不犧牲可移植性：
+
+| 組件 | 儲存類型 | 內容 | 可移植性 |
+| :--- | :--- | :--- | :--- |
+| **身份元數據 (Metadata)** | Git / 本地檔案 | 帳號名稱、發行者、索引資訊 | **高** (透過 Git 同步) |
+| **OTP 秘密 (Secrets)** | OS Keyring | 實際的 TOTP Secret Keys | **零** (鎖定在硬體設備) |
+
+### 為什麼這樣設計？
+- **零磁碟殘留**：你的實際金鑰永遠不會以明文形式寫入磁碟。它們被儲存在作業系統原生的保險箱中（如 macOS Keychain）。
+- **安全的同步**：你可以放心地將 JKI 的 Git 儲存庫推送到私有雲端。即使儲存庫外洩，攻擊者也只能看到你有「哪些」帳號，而拿不到「進入」這些帳號的金鑰。
+
+## 🔄 同步與災難恢復 (Sync & Disaster Recovery)
+
+### 設定新電腦
+1. 將 JKI 儲存庫 `git clone` 到新電腦。
+2. 執行 `jkim git sync` 恢復你的帳號結構。
+3. **重要**：你必須使用 `jkim add -f <account>` 為每個帳號手動重新輸入 Secret。元數據會隨 Git 遷移，但秘密不會。
+
+### 災難恢復計畫
+- **備份**：我們建議將原始的 2FA 恢復碼 (Recovery Codes) 妥善保存在離線位置（如物理保險箱）。
+- **恢復**：如果你失去了對 OS Keyring 的存取權（例如電腦重灌且無備份），請使用恢復碼重設 2FA 並重新加入 JKI。
 
 ---
 

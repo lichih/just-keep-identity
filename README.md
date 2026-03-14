@@ -12,7 +12,7 @@
 *   **Extreme Velocity**: Search and copy in < 3ms. By the time you need the OTP, it's already in your clipboard.
 *   **Fuzzy Intelligence**: Advanced fuzzy search with character highlighting. Locate accounts instantly even if you don't remember the exact name.
 *   **Smart Agent**: Intelligent background agent supporting auto-unlock for plaintext vaults and active disk synchronization (Active Reload).
-*   **Physical Isolation**: Built on `age` encryption. All secrets stay on your local disk or your private Git repo—zero cloud dependency.
+*   **Physical Isolation**: Built on OS Keyring. Your secrets stay in your system's secure enclave—zero cloud dependency.
 *   **CLI Ergonomics**: Optimized Micro-Roll command set (`j-k-i`), allowing for one-handed operation.
 
 ## 🧬 Technical DNA
@@ -20,9 +20,9 @@
 Built with Rust for extreme stability and security:
 
 *   **Intelligent Agent**: `jki-agent` manages decrypted memory cache. It's the secure gateway to OS Keyring integration.
-*   **Dual-Mode Vault**:
-    *   `Plaintext Mode`: Maximum speed, reads local plaintext cache in secure environments.
-    *   `Encrypted Mode`: AES-GCM encryption via `age`, perfect for Git synchronization and long-term storage.
+*   **Hybrid Vault**:
+    *   **Metadata**: Managed via local files and Git for versioning.
+    *   **Secrets**: Directly integrated with OS Keyring (macOS Keychain, Linux Secret Service).
 *   **Unix-Friendly**: Perfect pipe support (`stdout -`), easily integrates with `ssh`, `git`, `kubectl`, and other CLI tools.
 
 ## 🛠 Quick Start
@@ -55,14 +55,47 @@ jkim git sync
 
 ---
 
-## 📦 Installation (macOS)
+## 📦 Installation
 
+### Option A: Homebrew (Recommended for macOS)
 ```bash
-# Clone and Install
-git clone https://github.com/creart-tw/just-keep-identity.git
+brew tap lichih/jki
+brew install jki
+```
+
+### Option B: From Source (For Developers/Linux)
+Ensure you have the [Rust toolchain](https://rustup.rs/) installed:
+```bash
+git clone https://github.com/lichih/just-keep-identity.git
 cd just-keep-identity
 make install
 ```
+
+---
+
+## 🛡 Security Architecture & Mental Model
+
+JKI adopts a **"Separation of Concerns"** strategy to ensure maximum security without sacrificing portability:
+
+| Component | Storage Type | Content | Portability |
+| :--- | :--- | :--- | :--- |
+| **Identity Metadata** | Git / Local File | Account names, Issuers, Indexing | **High** (Sync via Git) |
+| **OTP Secrets** | OS Keyring | The actual TOTP Secret Keys | **Zero** (Locked to Hardware) |
+
+### Why this design?
+- **Zero Disk Leak**: Your actual secrets are never written to disk in plaintext. They are stored in your OS-native vault (macOS Keychain / Linux Secret Service).
+- **Safe Syncing**: You can safely push your JKI Git repository to a private cloud. Even if the repo is compromised, the attacker only sees *who* you have accounts with, not the *keys* to access them.
+
+## 🔄 Syncing & Disaster Recovery
+
+### Setting up a New Machine
+1. `git clone` your JKI repository to the new machine.
+2. Run `jkim git sync` to restore your account structure.
+3. **Important**: You must manually re-add the secrets for each account using `jkim add -f <account>`. Metadata travels via Git; Secrets do not.
+
+### Disaster Recovery Plan
+- **Backup**: We recommend keeping your original 2FA Recovery Codes in a separate, offline location (e.g., a physical safe).
+- **Recovery**: If you lose access to your OS Keyring (e.g., system wipe without backup), use your Recovery Codes to reset your 2FA and re-add them to JKI.
 
 ---
 

@@ -114,11 +114,31 @@ sign: bundle
 ## notarize: Notarize the macOS app bundle
 notarize: sign
 	./scripts/notarize_macos.sh "$(APP_BUNDLE)" "$(APPLE_ID)" "$(TEAM_ID)" "$(AC_PASSWORD)"
+
+## brew-package: Package binaries for Homebrew (macOS ARM64)
+brew-package: release
+	@echo "Packaging binaries for Homebrew..."
+	@mkdir -p target/brew
+	@cp $(TARGET_DIR)/jki target/brew/
+	@cp $(TARGET_DIR)/jkim target/brew/
+	@cp $(TARGET_DIR)/jki-agent target/brew/
+	@tar -czf target/jki-macos-arm64.tar.gz -C target/brew .
+	@rm -rf target/brew
+	@echo "Package created at target/jki-macos-arm64.tar.gz"
+	@shasum -a 256 target/jki-macos-arm64.tar.gz
+
+## brew-dist: Upload package to GitHub release and update Homebrew formula
+brew-dist: brew-package
+	@echo "Uploading to GitHub Release..."
+	@gh release upload $(shell git describe --tags --abbrev=0) target/jki-macos-arm64.tar.gz --clobber
+	@echo "Update docs/homebrew-jki.rb with the new SHA256 above."
+
 ## clean: Remove build artifacts
 clean:
 	cargo clean
 	rm -rf $(TARGET_DIR)/*.icns
 	rm -rf $(TARGET_DIR)/*.app
+	rm -f target/jki-macos-arm64.tar.gz
 
 ## help: Show this help message
 help:
