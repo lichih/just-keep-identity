@@ -1,16 +1,16 @@
 # Just Keep Identity (jki)
-> **Extreme speed MFA & Identity Session Manager for CLI Power Users.**
+> **Low-friction MFA & Identity Session Manager for CLI Power Users.**
 
 ![JKI Demo](docs/assets/demo.gif)
 
 [繁體中文](README.zh-TW.md)
 
-`jki` is an identity authorization tool designed specifically for engineers. It's not just about managing TOTP; it's about completing authentication at "millisecond" speeds without ever leaving your terminal.
+`jki` is an identity authorization tool designed specifically for engineers. It's not just about managing TOTP; it's about completing authentication with minimal keystrokes without ever leaving your terminal.
 
 ## 🚀 Core Philosophy
 
-*   **Extreme Velocity**: Search and copy in < 3ms. By the time you need the OTP, it's already in your clipboard.
-*   **Fuzzy Intelligence**: Advanced fuzzy search with character highlighting. Locate accounts instantly even if you don't remember the exact name.
+*   **Low Friction**: Search and copy in a few keystrokes. By the time you need the OTP, it's already in your clipboard.
+*   **Fuzzy Search Engine**: Advanced fuzzy search with character highlighting. Locate accounts instantly even if you don't remember the exact name.
 *   **Smart Agent**: Intelligent background agent supporting auto-unlock for plaintext vaults and active disk synchronization (Active Reload).
 *   **Physical Isolation**: Built on OS Keyring. Your secrets stay in your system's secure enclave—zero cloud dependency.
 *   **CLI Ergonomics**: Optimized Micro-Roll command set (`j-k-i`), allowing for one-handed operation.
@@ -20,7 +20,7 @@
 
 ## 🧬 Technical DNA
 
-Built with Rust for extreme stability and security:
+Built with Rust for performance and safety:
 
 *   **Intelligent Agent**: `jki-agent` manages decrypted memory cache. It features an **automatic TTL (1-hour session)** that wipes secrets from memory after inactivity. *(Currently optimized for macOS)*.
 *   **Hybrid Vault**:
