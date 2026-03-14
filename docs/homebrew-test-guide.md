@@ -31,8 +31,12 @@ export HOMEBREW_CELLAR="$JKI_PURITY_DIR/Cellar"
 export HOMEBREW_REPOSITORY="$JKI_PURITY_DIR"
 export HOMEBREW_CACHE="$JKI_PURITY_DIR/cache"
 
-# 3. 確保不限制更新，以便 brew 執行 git clone 進行 tap
-unset HOMEBREW_NO_AUTO_UPDATE
+# 3. 關鍵：禁用自動更新
+# 因為我們是透過 tarball 安裝的，brew 無法對自身執行 git update
+# 若不禁用，執行 tap 時會觸發 update-report 錯誤
+export HOMEBREW_NO_AUTO_UPDATE=1
+
+# 4. 允許從 API 獲取索引（建議取消禁令以提升效能）
 unset HOMEBREW_NO_INSTALL_FROM_API
 
 # 驗證環境
