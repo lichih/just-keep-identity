@@ -1,21 +1,17 @@
+use anyhow::{anyhow, Context};
 use clap::Parser;
 use interprocess::local_socket::LocalSocketListener;
 use jki_core::{
     agent::{Request, Response},
+    decrypt_with_master_key, generate_otp,
     paths::JkiPath,
-    decrypt_with_master_key,
-    AccountSecret,
-    generate_otp,
-    Account,
-    AccountType,
-    AuthSource,
+    Account, AccountSecret, AccountType, AuthSource,
 };
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::thread;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
-use anyhow::{Context, anyhow};
 
 mod tray;
 
@@ -68,7 +64,8 @@ impl State {
                 let auth = data.auth;
                 let master_key = data.master_key.clone();
                 println!("Session expired (TTL). Transitioning to LockedPersistent.");
-                self.vault = VaultState::LockedPersistent(LockedPersistentData { master_key, auth });
+                self.vault =
+                    VaultState::LockedPersistent(LockedPersistentData { master_key, auth });
             }
         }
     }
@@ -95,16 +92,23 @@ impl State {
         let decrypted_path = JkiPath::decrypted_secrets_path();
 
         let (secrets_map, source) = if sec_path.exists() && auth != AuthSource::Plaintext {
-            let sec_encrypted = std::fs::read(&sec_path).context("Failed to read encrypted vault")?;
-            let sec_json = decrypt_with_master_key(&sec_encrypted, &master_key).map_err(|e| anyhow!(e))?;
-            let map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).context("Failed to parse vault secrets")?;
+            let sec_encrypted =
+                std::fs::read(&sec_path).context("Failed to read encrypted vault")?;
+            let sec_json =
+                decrypt_with_master_key(&sec_encrypted, &master_key).map_err(|e| anyhow!(e))?;
+            let map: HashMap<String, AccountSecret> =
+                serde_json::from_slice(&sec_json).context("Failed to parse vault secrets")?;
             (map, "Encrypted Vault")
         } else if decrypted_path.exists() {
-            let sec_json = std::fs::read(&decrypted_path).context("Failed to read plaintext vault")?;
-            let map: HashMap<String, AccountSecret> = serde_json::from_slice(&sec_json).context("Failed to parse plaintext secrets")?;
+            let sec_json =
+                std::fs::read(&decrypted_path).context("Failed to read plaintext vault")?;
+            let map: HashMap<String, AccountSecret> =
+                serde_json::from_slice(&sec_json).context("Failed to parse plaintext secrets")?;
             (map, "Plaintext Vault")
         } else {
-            return Err(anyhow!("Secrets file missing (neither .age nor .json found)"));
+            return Err(anyhow!(
+                "Secrets file missing (neither .age nor .json found)"
+            ));
         };
 
         self.vault = VaultState::Unlocked(UnlockedData {
@@ -119,7 +123,7 @@ impl State {
 
     fn get_otp(&mut self, account_id: &str) -> anyhow::Result<String> {
         self.check_ttl();
-        
+
         // Restore Passive Re-unlock logic
         if let VaultState::LockedPersistent(ref data) = self.vault {
             let key = data.master_key.clone();
@@ -131,8 +135,10 @@ impl State {
             _ => return Err(anyhow!("Agent is locked")),
         };
 
-        let secret = secrets.get(account_id).ok_or_else(|| anyhow!("Account not found"))?;
-        
+        let secret = secrets
+            .get(account_id)
+            .ok_or_else(|| anyhow!("Account not found"))?;
+
         let acc = Account {
             id: account_id.to_string(),
             name: "".to_string(),
@@ -150,8 +156,12 @@ impl State {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut auth = args.auth;
-    
-    if std::env::var("JKI_FORCE_AGE").map(|v| v == "1").unwrap_or(false) && auth == AuthSource::Auto {
+
+    if std::env::var("JKI_FORCE_AGE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+        && auth == AuthSource::Auto
+    {
         auth = AuthSource::Agent;
     }
 
@@ -160,7 +170,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let socket_path = JkiPath::agent_socket_path();
-    let name = socket_path.to_str().ok_or_else(|| anyhow!("Invalid socket path"))?.to_string();
+    let name = socket_path
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid socket path"))?
+        .to_string();
 
     let has_encrypted = JkiPath::secrets_path().exists();
     let has_plaintext = JkiPath::decrypted_secrets_path().exists();
@@ -220,7 +233,7 @@ fn main() -> anyhow::Result<()> {
                         std::process::exit(1);
                     }
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("CRITICAL: Biometric (Keychain) access failed: {}. Exit.", e);
                 std::process::exit(1);
@@ -249,9 +262,9 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    use tao::event_loop::{ControlFlow, EventLoop};
-    use tao::event::Event;
     use muda::MenuEvent;
+    use tao::event::Event;
+    use tao::event_loop::{ControlFlow, EventLoop};
 
     let mut event_loop = EventLoop::new();
 
@@ -262,7 +275,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (tray_handler, _menu) = tray::TrayHandler::new();
-    
+
     {
         let s = state.lock().map_err(|_| anyhow!("Failed to lock state"))?;
         tray_handler.update_status(&s);
@@ -295,11 +308,19 @@ fn main() -> anyhow::Result<()> {
     });
 }
 
-fn handle_client(stream: interprocess::local_socket::LocalSocketStream, state: Arc<Mutex<State>>, shutdown_tx: std::sync::mpsc::Sender<()>) -> io::Result<()> {
+fn handle_client(
+    stream: interprocess::local_socket::LocalSocketStream,
+    state: Arc<Mutex<State>>,
+    shutdown_tx: std::sync::mpsc::Sender<()>,
+) -> io::Result<()> {
     handle_client_io(stream, state, shutdown_tx)
 }
 
-fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>, shutdown_tx: std::sync::mpsc::Sender<()>) -> io::Result<()> {
+fn handle_client_io<S: Read + Write>(
+    stream: S,
+    state: Arc<Mutex<State>>,
+    shutdown_tx: std::sync::mpsc::Sender<()>,
+) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
 
@@ -312,14 +333,17 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>, shutdo
             Err(e) => return Err(e),
         };
 
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
 
         let req: Request = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
                 let resp = Response::Error(format!("Invalid request: {}", e));
                 let s = reader.get_mut();
-                let _ = s.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                let _ =
+                    s.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
                 let _ = s.flush();
                 continue;
             }
@@ -360,8 +384,12 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>, shutdo
                 use secrecy::ExposeSecret;
                 let s = state.lock().unwrap();
                 match &s.vault {
-                    VaultState::Unlocked(data) => Response::MasterKey(data.master_key.expose_secret().clone()),
-                    VaultState::LockedPersistent(data) => Response::MasterKey(data.master_key.expose_secret().clone()),
+                    VaultState::Unlocked(data) => {
+                        Response::MasterKey(data.master_key.expose_secret().clone())
+                    }
+                    VaultState::LockedPersistent(data) => {
+                        Response::MasterKey(data.master_key.expose_secret().clone())
+                    }
                     VaultState::Locked(_) => Response::Error("Agent is locked".to_string()),
                 }
             }
@@ -390,8 +418,9 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>, shutdo
                         // If it's Auto/Plaintext and plaintext exists, try to auto-unlock
                         let has_encrypted = JkiPath::secrets_path().exists();
                         let has_plaintext = JkiPath::decrypted_secrets_path().exists();
-                        if (auth == AuthSource::Plaintext && has_plaintext) ||
-                           (auth == AuthSource::Auto && has_plaintext && !has_encrypted) {
+                        if (auth == AuthSource::Plaintext && has_plaintext)
+                            || (auth == AuthSource::Auto && has_plaintext && !has_encrypted)
+                        {
                             let _ = s.unlock(secrecy::SecretString::from("".to_string()));
                         }
                     }
@@ -417,23 +446,28 @@ fn handle_client_io<S: Read + Write>(stream: S, state: Arc<Mutex<State>>, shutdo
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use serial_test::serial;
+    use std::io::Cursor;
 
     struct MockStream {
         input: Cursor<Vec<u8>>,
         output: Vec<u8>,
     }
     impl Read for MockStream {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.input.read(buf) }
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.input.read(buf)
+        }
     }
     impl Write for MockStream {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.output.write(buf) }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.output.write(buf)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -443,15 +477,18 @@ mod tests {
         let req = Request::Ping;
         let mut input_data = serde_json::to_vec(&req).unwrap();
         input_data.push(b'\n');
-        
-        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+
+        let mut stream = MockStream {
+            input: Cursor::new(input_data),
+            output: Vec::new(),
+        };
         let (tx, _) = std::sync::mpsc::channel();
         handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_str = String::from_utf8(stream.output).unwrap();
         let resp: Response = serde_json::from_str(&resp_str).unwrap();
         match resp {
-            Response::Pong => {},
+            Response::Pong => {}
             _ => panic!("Expected Pong, got {:?}", resp),
         }
     }
@@ -460,11 +497,16 @@ mod tests {
     #[serial]
     fn test_handle_client_get_otp_locked() {
         let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
-        let req = Request::GetOTP { account_id: "test".to_string() };
+        let req = Request::GetOTP {
+            account_id: "test".to_string(),
+        };
         let mut input_data = serde_json::to_vec(&req).unwrap();
         input_data.push(b'\n');
-        
-        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+
+        let mut stream = MockStream {
+            input: Cursor::new(input_data),
+            output: Vec::new(),
+        };
         let (tx, _) = std::sync::mpsc::channel();
         handle_client_io(&mut stream, state, tx).unwrap();
 
@@ -479,54 +521,66 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_client_unlock_and_get_otp() {
-        use tempfile::tempdir;
-        use std::env;
         use jki_core::encrypt_with_master_key;
         use secrecy::SecretString;
+        use std::env;
+        use tempfile::tempdir;
 
         let temp = tempdir().unwrap();
         let home = temp.path().join("jki_home_agent_test");
         std::fs::create_dir_all(&home).unwrap();
-        
+
         let sec_path = home.join("vault.secrets.bin.age");
         env::set_var("JKI_HOME", home.to_str().unwrap());
         env::set_var("JKI_SECRETS_PATH", sec_path.to_str().unwrap());
 
         let master_key_val = "testpass";
         let master_key = SecretString::from(master_key_val.to_string());
-        
+
         let acc_id = "test-id";
         let mut secrets_map = HashMap::new();
-        secrets_map.insert(acc_id.to_string(), AccountSecret {
-            secret: "JBSWY3DPEHPK3PXP".to_string(),
-            digits: 6,
-            algorithm: "SHA1".to_string(),
-        });
+        secrets_map.insert(
+            acc_id.to_string(),
+            AccountSecret {
+                secret: "JBSWY3DPEHPK3PXP".to_string(),
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            },
+        );
         let sec_json = serde_json::to_vec(&secrets_map).unwrap();
         let encrypted = encrypt_with_master_key(&sec_json, &master_key).unwrap();
         std::fs::write(&sec_path, encrypted).unwrap();
 
         let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
 
-        let unlock_req = Request::Unlock { master_key: master_key_val.to_string() };
+        let unlock_req = Request::Unlock {
+            master_key: master_key_val.to_string(),
+        };
         let mut input_data = serde_json::to_vec(&unlock_req).unwrap();
         input_data.push(b'\n');
 
-        let otp_req = Request::GetOTP { account_id: acc_id.to_string() };
+        let otp_req = Request::GetOTP {
+            account_id: acc_id.to_string(),
+        };
         input_data.extend(serde_json::to_vec(&otp_req).unwrap());
         input_data.push(b'\n');
 
-        let mut stream = MockStream { input: Cursor::new(input_data), output: Vec::new() };
+        let mut stream = MockStream {
+            input: Cursor::new(input_data),
+            output: Vec::new(),
+        };
         let (tx, _) = std::sync::mpsc::channel();
         handle_client_io(&mut stream, state, tx).unwrap();
 
         let resp_output = String::from_utf8(stream.output).unwrap();
-        let mut resps = resp_output.lines().map(|l| serde_json::from_str::<Response>(l).unwrap());
+        let mut resps = resp_output
+            .lines()
+            .map(|l| serde_json::from_str::<Response>(l).unwrap());
 
         match resps.next().unwrap() {
             Response::Unlocked(source) => {
                 assert!(source.contains("Vault"));
-            },
+            }
             resp => panic!("Expected Unlocked, got {:?}", resp),
         }
 
@@ -539,7 +593,7 @@ mod tests {
     fn test_vault_state_ttl_expiration() {
         let mut state = State::new(AuthSource::Auto);
         state.ttl = Duration::from_millis(10);
-        
+
         // Setup Unlocked state
         state.vault = VaultState::Unlocked(UnlockedData {
             secrets: HashMap::new(),
@@ -547,12 +601,12 @@ mod tests {
             last_unlocked: Instant::now(),
             auth: AuthSource::Auto,
         });
-        
+
         std::thread::sleep(Duration::from_millis(20));
         state.check_ttl();
-        
+
         match state.vault {
-            VaultState::LockedPersistent(_) => {},
+            VaultState::LockedPersistent(_) => {}
             _ => panic!("Expected LockedPersistent after TTL"),
         }
     }
@@ -560,9 +614,9 @@ mod tests {
     #[test]
     #[serial]
     fn test_vault_passive_re_unlock() {
-        use tempfile::tempdir;
-        use std::env;
         use jki_core::encrypt_with_master_key;
+        use std::env;
+        use tempfile::tempdir;
 
         let temp = tempdir().unwrap();
         let home = temp.path().join("jki_home_passive");
@@ -571,15 +625,20 @@ mod tests {
 
         let master_key_val = "testpass";
         let master_key = secrecy::SecretString::from(master_key_val.to_string());
-        
+
         let acc_id = "test-id";
         let mut secrets_map = HashMap::new();
-        secrets_map.insert(acc_id.to_string(), AccountSecret {
-            secret: "JBSWY3DPEHPK3PXP".to_string(),
-            digits: 6,
-            algorithm: "SHA1".to_string(),
-        });
-        let encrypted = encrypt_with_master_key(&serde_json::to_vec(&secrets_map).unwrap(), &master_key).unwrap();
+        secrets_map.insert(
+            acc_id.to_string(),
+            AccountSecret {
+                secret: "JBSWY3DPEHPK3PXP".to_string(),
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            },
+        );
+        let encrypted =
+            encrypt_with_master_key(&serde_json::to_vec(&secrets_map).unwrap(), &master_key)
+                .unwrap();
         std::fs::write(home.join("vault.secrets.bin.age"), encrypted).unwrap();
 
         let mut state = State::new(AuthSource::Auto);
@@ -595,5 +654,119 @@ mod tests {
         assert!(state.is_unlocked());
 
         env::remove_var("JKI_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_purge_audit() {
+        use secrecy::ExposeSecret;
+        let mut state = State::new(AuthSource::Auto);
+        state.ttl = Duration::from_millis(1); // Immediate expiration
+
+        let secret_val = "JBSWY3DPEHPK3PXP";
+        let master_key_val = "masterpass";
+
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "acc1".to_string(),
+            AccountSecret {
+                secret: secret_val.to_string(),
+                digits: 6,
+                algorithm: "SHA1".to_string(),
+            },
+        );
+
+        // 1. Enter Unlocked state
+        state.vault = VaultState::Unlocked(UnlockedData {
+            secrets,
+            master_key: secrecy::SecretString::from(master_key_val.to_string()),
+            last_unlocked: Instant::now() - Duration::from_secs(10), // Backdate
+            auth: AuthSource::Auto,
+        });
+
+        // 2. Trigger TTL cleanup
+        state.check_ttl();
+
+        // 3. Verify state transition
+        match &state.vault {
+            VaultState::LockedPersistent(data) => {
+                assert_eq!(
+                    data.master_key.expose_secret(),
+                    master_key_val,
+                    "Master key should be preserved in Persistent mode"
+                );
+            }
+            _ => panic!("Expected LockedPersistent"),
+        }
+
+        // 4. Verify that secrets (the 2FA keys) are GONE from State count
+        assert_eq!(
+            state.account_count(),
+            0,
+            "Account secrets must be purged from active state after TTL"
+        );
+
+        // 5. Hard Lock Test: Simulate explicit locking
+        state.vault = VaultState::Locked(LockedData {
+            auth: AuthSource::Auto,
+        });
+        assert_eq!(state.account_count(), 0);
+        assert!(!state.is_unlocked());
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_master_key_security_boundary() {
+        use secrecy::ExposeSecret;
+        use std::io::Cursor;
+        let state = Arc::new(Mutex::new(State::new(AuthSource::Auto)));
+        let (tx, _) = std::sync::mpsc::channel();
+
+        // Scenario 1: Locked - Should return error
+        {
+            let req = Request::GetMasterKey;
+            let mut input_data = serde_json::to_vec(&req).unwrap();
+            input_data.push(b'\n');
+            let mut stream = MockStream {
+                input: Cursor::new(input_data),
+                output: Vec::new(),
+            };
+            handle_client_io(&mut stream, Arc::clone(&state), tx.clone()).unwrap();
+            let resp: Response =
+                serde_json::from_str(&String::from_utf8(stream.output).unwrap()).unwrap();
+            match resp {
+                Response::Error(msg) => assert!(msg.contains("locked")),
+                _ => panic!("Should fail when locked"),
+            }
+        }
+
+        // Scenario 2: Unlocked - Should return key
+        {
+            let key_val = "secret_key_123";
+            {
+                let mut s = state.lock().unwrap();
+                s.vault = VaultState::Unlocked(UnlockedData {
+                    secrets: HashMap::new(),
+                    master_key: secrecy::SecretString::from(key_val.to_string()),
+                    last_unlocked: Instant::now(),
+                    auth: AuthSource::Auto,
+                });
+            }
+
+            let req = Request::GetMasterKey;
+            let mut input_data = serde_json::to_vec(&req).unwrap();
+            input_data.push(b'\n');
+            let mut stream = MockStream {
+                input: Cursor::new(input_data),
+                output: Vec::new(),
+            };
+            handle_client_io(&mut stream, Arc::clone(&state), tx).unwrap();
+            let resp: Response =
+                serde_json::from_str(&String::from_utf8(stream.output).unwrap()).unwrap();
+            match resp {
+                Response::MasterKey(k) => assert_eq!(k, key_val),
+                _ => panic!("Should return key when unlocked"),
+            }
+        }
     }
 }

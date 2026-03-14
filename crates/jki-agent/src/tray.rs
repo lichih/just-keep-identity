@@ -1,11 +1,11 @@
-use muda::{Menu, MenuItem, PredefinedMenuItem, MenuEvent};
-use tray_icon::{TrayIcon, TrayIconBuilder};
-use std::sync::{Arc, Mutex};
 use crate::State;
-use jki_core::paths::JkiPath;
 use jki_core::keychain::{KeyringStore, SecretStore};
+use jki_core::paths::JkiPath;
+use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use notify_rust::Notification;
-use std::time::{Instant, Duration};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tray_icon::{TrayIcon, TrayIconBuilder};
 
 pub struct TrayHandler {
     _tray: TrayIcon,
@@ -23,20 +23,21 @@ pub struct TrayHandler {
 impl TrayHandler {
     pub fn new() -> (Self, Menu) {
         let menu = Menu::new();
-        
+
         // --- Dashboard Section ---
         let status_label = MenuItem::new("JKI Agent: Unknown", false, None);
         let account_label = MenuItem::new("Vault: No data loaded", false, None);
         let keychain_warning = MenuItem::new("⚠️ Keychain not configured", false, None);
-        
+
         // --- Session Management Section ---
-        let unlock_biometric_item = MenuItem::new("Unlock via Biometric (TouchID/Hello)", true, None);
+        let unlock_biometric_item =
+            MenuItem::new("Unlock via Biometric (TouchID/Hello)", true, None);
         let lock_item = MenuItem::new("Purge Session & Lock Vault", true, None);
-        
+
         // --- Vault Operations Section ---
         let reload_item = MenuItem::new("Refresh Secrets from Disk", true, None);
         let open_config_item = MenuItem::new("Open Config Directory...", true, None);
-        
+
         // --- System Section ---
         let quit_item = MenuItem::new("Quit JKI Agent", true, None);
 
@@ -82,11 +83,15 @@ impl TrayHandler {
 
     pub fn update_status(&self, state: &State) {
         let is_unlocked = state.is_unlocked();
-        
+
         // 1. Update Dashboard
         if is_unlocked {
-            self.status_label.set_text("Status: UNLOCKED (Active Session)");
-            self.account_label.set_text(format!("Vault: {} accounts available", state.account_count()));
+            self.status_label
+                .set_text("Status: UNLOCKED (Active Session)");
+            self.account_label.set_text(format!(
+                "Vault: {} accounts available",
+                state.account_count()
+            ));
         } else {
             self.status_label.set_text("Status: LOCKED (Safe)");
             self.account_label.set_text("Vault: Metadata only");
@@ -95,7 +100,7 @@ impl TrayHandler {
         // 2. Keychain Health Check (Cached for 10 seconds to avoid UI lag)
         let mut check_guard = self.last_keychain_check.lock().unwrap();
         let (last_check, last_result) = *check_guard;
-        
+
         let keychain_ready = if last_check.elapsed() > Duration::from_secs(10) {
             let ready = KeyringStore.get_secret("jki", "master_key").is_ok();
             *check_guard = (Instant::now(), ready);
@@ -108,13 +113,15 @@ impl TrayHandler {
             self.keychain_warning.set_text(""); // "Hide" by clearing text
             self.keychain_warning.set_enabled(false);
         } else {
-            self.keychain_warning.set_text("⚠️ Run 'jkim master-key set --keychain'");
+            self.keychain_warning
+                .set_text("⚠️ Run 'jkim master-key set --keychain'");
             self.keychain_warning.set_enabled(false); // Labels should not be clickable
         }
-        
+
         // 3. Toggle interaction states
         // Crucial: Disable biometric unlock if keychain is not ready
-        self.unlock_biometric_item.set_enabled(!is_unlocked && keychain_ready);
+        self.unlock_biometric_item
+            .set_enabled(!is_unlocked && keychain_ready);
         self.lock_item.set_enabled(is_unlocked);
         self.reload_item.set_enabled(is_unlocked);
     }
@@ -123,7 +130,7 @@ impl TrayHandler {
         if event.id == self.unlock_biometric_item.id() {
             // 1. Heavy/Blocking operation outside the lock (System Biometric Prompt)
             let master_key_res = KeyringStore.get_secret("jki", "master_key");
-            
+
             match master_key_res {
                 Ok(master_key) => {
                     // 2. Short critical section for atomic state update
@@ -138,7 +145,7 @@ impl TrayHandler {
                                 .summary("JKI Agent")
                                 .body("Vault unlocked successfully via Biometric.")
                                 .show();
-                        },
+                        }
                         Err(e) => {
                             let _ = Notification::new()
                                 .summary("Unlock Failed")
@@ -147,16 +154,19 @@ impl TrayHandler {
                             eprintln!("Tray: Unlock failed: {}", e);
                         }
                     }
-                },
+                }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    let body = if err_msg.contains("Secret not found") || err_msg.contains("not found") {
-                        "Keychain not configured. Please run: jkim master-key set --keychain"
-                    } else if err_msg.contains("User interaction is not allowed") || err_msg.contains("canceled") {
-                        "Biometric authentication was cancelled."
-                    } else {
-                        &err_msg
-                    };
+                    let body =
+                        if err_msg.contains("Secret not found") || err_msg.contains("not found") {
+                            "Keychain not configured. Please run: jkim master-key set --keychain"
+                        } else if err_msg.contains("User interaction is not allowed")
+                            || err_msg.contains("canceled")
+                        {
+                            "Biometric authentication was cancelled."
+                        } else {
+                            &err_msg
+                        };
                     let _ = Notification::new()
                         .summary("Biometric Failed")
                         .body(body)
@@ -170,7 +180,7 @@ impl TrayHandler {
                 let mut check_guard = self.last_keychain_check.lock().unwrap();
                 check_guard.0 = Instant::now() - Duration::from_secs(60);
             }
-            
+
             // Final UI update
             let s = state.lock().unwrap();
             self.update_status(&s);
@@ -210,8 +220,11 @@ impl TrayHandler {
                     crate::VaultState::Locked(_) => {
                         let has_encrypted = JkiPath::secrets_path().exists();
                         let has_plaintext = JkiPath::decrypted_secrets_path().exists();
-                        if (auth == jki_core::AuthSource::Plaintext && has_plaintext) ||
-                           (auth == jki_core::AuthSource::Auto && has_plaintext && !has_encrypted) {
+                        if (auth == jki_core::AuthSource::Plaintext && has_plaintext)
+                            || (auth == jki_core::AuthSource::Auto
+                                && has_plaintext
+                                && !has_encrypted)
+                        {
                             let _ = s.unlock(secrecy::SecretString::from("".to_string()));
                         }
                     }
@@ -242,9 +255,9 @@ fn load_icon() -> tray_icon::Icon {
     let image = image::load_from_memory(icon_bytes)
         .expect("Failed to load icon from assets/icon.png")
         .into_rgba8();
-    
+
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
-    
+
     tray_icon::Icon::from_rgba(rgba, width, height).unwrap()
 }
