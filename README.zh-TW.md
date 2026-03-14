@@ -86,7 +86,8 @@ JKI 採用**「關注點分離」**策略，在確保最高安全性的同時不
 ### 為什麼這樣設計？
 - **零磁碟殘留**：你的實際金鑰永遠不會以明文形式寫入磁碟。它們被儲存在作業系統原生的保險箱中（如 macOS Keychain）。
 - **安全的同步**：你可以放心地將 JKI 的 Git 儲存庫推送到私有雲端。即使儲存庫外洩，攻擊者也只能看到你有「哪些」帳號，而拿不到「進入」這些帳號的金鑰。
-- **排除策略 (Exclusion Policy)**：JKI 預設的 `.gitignore` 會自動排除明文檔案 (`vault.json`, `master.key`, `*.txt`)。**Git 備份僅在金鑰儲存於「加密模式 (Age)」或「OS Keyring」時才會生效。**
+- **排除策略 (Exclusion Policy)**：JKI 預設的 `.gitignore` 會自動排除明文檔案 (`vault.json`, `master.key`, `*.txt`)。
+- **自動加固同步 (Auto-Hardening Sync)**：當執行 `jkim git sync` 時，系統會主動偵測明文金鑰。若目前有可用的 Master Key（透過 Agent 或 Keychain），JKI 會**自動執行加密並替換明文檔案**，確保您的秘密在同步過程中始終受到 `age` 加密保護。
 
 ## 🔄 同步與災難恢復 (Sync & Disaster Recovery)
 

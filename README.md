@@ -85,7 +85,8 @@ JKI adopts a **"Separation of Concerns"** strategy to ensure maximum security wi
 ### Why this design?
 - **Zero Disk Leak**: Your actual secrets are never written to disk in plaintext. They are stored in your OS-native vault (macOS Keychain / Linux Secret Service).
 - **Safe Syncing**: You can safely push your JKI Git repository to a private cloud. Even if the repo is compromised, the attacker only sees *who* you have accounts with, not the *keys* to access them.
-- **Exclusion Policy**: JKI's default `.gitignore` automatically excludes plaintext files (`vault.json`, `master.key`, `*.txt`). **Git backup only functions when your secrets are stored in Encrypted/Age mode or the OS Keyring.**
+- **Exclusion Policy**: JKI's default `.gitignore` automatically excludes plaintext files (`vault.json`, `master.key`, `*.txt`).
+- **Auto-Hardening Sync**: When running `jkim git sync`, JKI intelligently detects plaintext secrets. If a Master Key is available (via Agent or Keychain), it will **automatically encrypt your vault and secure it** before staging, ensuring your secrets are always protected during transport.
 
 ## 🔄 Syncing & Disaster Recovery
 
