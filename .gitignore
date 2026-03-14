@@ -40,3 +40,9 @@ vault.json
 
 # Homebrew standalone test directory
 /brew-test/
+
+# Private data & Development
+data/
+private/
+config.json
+*.stable
