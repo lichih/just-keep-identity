@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JKI | Fast, Local-first 2FA for CLI Power Users</title>
+    <meta name="description" content="Stop reaching for your phone. JKI is a lightning-fast TOTP manager built in Rust, integrated with macOS Keychain, and synced via Git.">
+    
+    <!-- SEO & Social -->
+    <meta property="og:title" content="JKI | Just Keep Identity">
+    <meta property="og:description" content="Low-friction MFA & Identity Session Manager for CLI Power Users.">
+    <meta property="og:image" content="https://jki.4649.tw/assets/demo.gif">
+    <meta name="twitter:card" content="summary_large_image">
+
+    <!-- Styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #000; color: #fff; font-family: 'Courier New', Courier, monospace; }
+        .jki-green { color: #00ff00; }
+        .border-jki { border-color: #333; }
+        .bg-code { background-color: #111; }
+    </style>
+
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Just Keep Identity (JKI)",
+      "operatingSystem": "macOS, Linux",
+      "applicationCategory": "SecurityApplication",
+      "offers": {
+        "@type": "Offer",
+        "price": "0"
+      }
+    }
+    </script>
+</head>
+<body class="p-6 md:p-24 max-w-4xl mx-auto">
+
+    <header class="mb-16">
+        <h1 class="text-4xl font-bold mb-4 jki-green">Just Keep Identity (jki)</h1>
+        <p class="text-xl text-gray-400 font-bold italic">Because searching for 2FA tokens should be faster than typing a shell alias.</p>
+    </header>
+
+    <section class="mb-16">
+        <div class="bg-code p-6 border border-jki rounded-lg mb-8">
+            <p class="text-gray-500 mb-2"># Install via Homebrew</p>
+            <code class="text-lg jki-green">brew tap lichih/jki && brew install jki</code>
+        </div>
+        <img src="assets/demo.gif" alt="JKI Demo" class="w-full border border-jki rounded shadow-2xl">
+    </section>
+
+    <article class="prose prose-invert lg:prose-xl">
+        <h2 class="text-2xl font-bold mb-6 jki-green">The Backstory</h2>
+        <div class="text-gray-300 leading-relaxed space-y-4">
+            <p>I built JKI because I moved from Windows to macOS and couldn't find a 2FA manager that didn't annoy me. I was a long-time WinAuth user, but on macOS, everything was either behind a paywall, bloated with GUIs, or just felt slow.</p>
+            <p>For a developer, taking your hands off the home row to click a GUI search box feels like a bug. Sifting through 30+ entries should take milliseconds, not mouse movements. JKI exists so I can get my OTP and get back to work without my hands ever leaving the keyboard.</p>
+            <p>I don't trust the cloud with my secrets. Why bother with another proprietary service when we already have Git? JKI uses your own infrastructure for syncing, while keeping secrets hardware-bound or strongly encrypted.</p>
+        </div>
+    </article>
+
+    <section class="mt-20 grid md:grid-cols-2 gap-8">
+        <div class="border border-jki p-6 rounded">
+            <h3 class="font-bold mb-2 jki-green">Zero Latency</h3>
+            <p class="text-sm text-gray-400">Fuzzy search and copy to clipboard in a few keystrokes.</p>
+        </div>
+        <div class="border border-jki p-6 rounded">
+            <h3 class="font-bold mb-2 jki-green">Hardware Security</h3>
+            <p class="text-sm text-gray-400">Secrets stay in macOS Keychain or Linux Secret Service.</p>
+        </div>
+        <div class="border border-jki p-6 rounded">
+            <h3 class="font-bold mb-2 jki-green">Git-Powered</h3>
+            <p class="text-sm text-gray-400">Sync metadata (and encrypted secrets) via your own Git repo.</p>
+        </div>
+        <div class="border border-jki p-6 rounded">
+            <h3 class="font-bold mb-2 jki-green">Officially Signed</h3>
+            <p class="text-sm text-gray-400">Notarized for macOS to ensure a seamless security experience.</p>
+        </div>
+    </section>
+
+    <footer class="mt-24 pt-8 border-t border-jki text-center text-gray-600">
+        <p class="mb-4">Built with ❤️ for those who live in the terminal.</p>
+        <div class="flex justify-center space-x-6">
+            <a href="https://github.com/lichih/just-keep-identity" class="hover:text-white underline">GitHub</a>
+            <a href="https://github.com/lichih/homebrew-jki" class="hover:text-white underline">Homebrew</a>
+        </div>
+    </footer>
+
+</body>
+</html>

@@ -7,24 +7,20 @@
 
 ## 📖 The Backstory
 
-I built JKI because I moved from Windows to macOS and couldn't find an MFA manager that fit my workflow. I was a long-time WinAuth user, but on macOS, everything was either behind a paywall or just felt slow.
+I built JKI because I moved from Windows to macOS and couldn't find a 2FA manager that didn't annoy me. I was a long-time WinAuth user, but on macOS, everything was either behind a paywall, bloated with GUIs, or just felt slow.
 
-Even with a GUI search, the friction of taking hands off the keyboard to click a search box and type felt wrong for a CLI-focused workflow. Sifting through 30+ entries in a list should be a matter of milliseconds, not mouse movements. I wanted something where finding an account was faster than the time it takes for my hands to leave the home row.
+For a developer, taking your hands off the home row to click a GUI search box feels like a bug. Finding an account should be a matter of milliseconds. JKI exists so I can get my OTP and get back to work without my hands ever leaving the keyboard.
 
-JKI was built to be a "Zero-Cloud" option. Why bother with another proprietary cloud service when we already have Git? JKI uses your own Git infrastructure (GitHub, or your private server) for syncing metadata, while keeping secrets pinned to your hardware.
+I don't trust the cloud with my secrets. Why bother with another proprietary service when we already have Git? JKI uses your own infrastructure for syncing, while keeping secrets hardware-bound or strongly encrypted.
 
-`jki` is an identity authorization tool designed specifically for engineers. It's not just about managing TOTP; it's about completing authentication with minimal keystrokes without ever leaving your terminal.
+## 🚀 The JKI Way
 
-## 🚀 Core Philosophy
-
-*   **Low Friction**: Search and copy in a few keystrokes. By the time you need the OTP, it's already in your clipboard.
-*   **Fuzzy Search Engine**: Advanced fuzzy search with character highlighting. Locate accounts instantly even if you don't remember the exact name.
-*   **Smart Agent**: Intelligent background agent supporting auto-unlock for plaintext vaults and active disk synchronization (Active Reload).
-*   **Physical Isolation**: Built on OS Keyring. Your secrets stay in your system's secure enclave—zero cloud dependency.
-*   **CLI Ergonomics**: Optimized Micro-Roll command set (`j-k-i`), allowing for one-handed operation.
-*   **Tiered Distribution**:
-    *   **macOS**: Full suite with GUI/Tray agent, **officially signed and notarized** for a seamless experience.
-    *   **Linux & Windows**: Lightweight **CLI-only** core. Fast, portable, and integrates directly with your OS native keyring.
+*   **Zero Latency**: Fuzzy search and copy to clipboard in a few keystrokes.
+*   **Hardware-Bound Security**: Your secrets stay in your OS-native vault (macOS Keychain / Linux Secret Service).
+*   **Encryption-on-Transport**: JKI automatically encrypts secrets before they ever touch your Git staging area. No Master Key, no sync.
+*   **Git for Metadata**: Use your own Git repo for syncing account structure. You control the infrastructure.
+*   **Micro-Roll UX**: Optimized `j-k-i` command set designed for one-handed operation.
+*   **Officially Signed**: macOS version is notarized by Apple to avoid Gatekeeper warnings.
 
 ## 🧬 Technical DNA
 
@@ -87,21 +83,21 @@ make install
 
 ---
 
-## 🛡 Security Architecture & Mental Model
+## 🛡 Security Architecture
 
-JKI adopts a **"Separation of Concerns"** strategy to ensure maximum security without sacrificing portability:
+JKI adopts a **"Hybrid Vault"** strategy to ensure maximum security without sacrificing portability:
 
-| Component | Storage Type | Content | Portability |
+| Component | Storage (Local) | Storage (Sync) | Security |
 | :--- | :--- | :--- | :--- |
-| **Identity Metadata** | Git / Local File | Account names, Issuers, Indexing | **High** (Sync via Git) |
-| **OTP Secrets** | OS Keyring | The actual TOTP Secret Keys | **Zero** (Locked to Hardware) |
+| **Identity Metadata** | Local File | Git / Repo | Publicly visible in repo |
+| **OTP Secrets** | **OS Keyring** | **Encrypted Git** | AES-256 (Master Key required) |
 
 ### Why this design?
-- **Zero Disk Leak**: Your actual secrets are never written to disk in plaintext. They are stored in your OS-native vault (macOS Keychain / Linux Secret Service).
-- **Git as Your Cloud**: Why entrust your keys to a 3rd-party SaaS? Use your own Git infrastructure (GitHub, GitLab, or a private server) to sync metadata while keeping secrets hardware-bound.
-- **Safe Syncing**: Even if your Git repository is compromised, the attacker only sees *who* you have accounts with, not the *keys* to access them.
-- **Exclusion Policy**: JKI's default `.gitignore` automatically excludes plaintext files (`vault.json`, `master.key`, `*.txt`).
-- **Auto-Hardening Sync**: When running `jkim git sync`, JKI intelligently detects plaintext secrets. If a Master Key is available (via Agent or Keychain), it will **automatically encrypt your vault and secure it** before staging, ensuring your secrets are always protected during transport.
+- **Zero Disk Leak**: Your actual secrets are never stored in plaintext on disk. They live in your OS-native vault (macOS Keychain / Linux Secret Service).
+- **Auto-Hardening Sync**: When running `jkim git sync`, JKI intelligently detects plaintext secrets. If a Master Key is available, it will **automatically encrypt** them before staging, ensuring your secrets are always protected during transport.
+- **Git as Your Cloud**: Why entrust your keys to a 3rd-party SaaS? Use your own Git infrastructure (GitHub, GitLab, or a private server) to sync metadata while keeping secrets encrypted.
+- **Safe Syncing**: Even if your Git repository is compromised, the attacker only sees *who* you have accounts with. The actual keys are useless blobs without your Master Key.
+
 
 ## 🔄 Syncing & Disaster Recovery
 

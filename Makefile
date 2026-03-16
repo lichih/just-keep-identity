@@ -17,6 +17,9 @@ ICON_SET = $(TARGET_DIR)/icon.iconset
 CORE_BINS = jki jkim
 AGENT_BINS = jki-agent
 
+# Deployment
+SITE_REPO = git@github.com:lichih/jki.4649.tw.git
+
 all: help
 
 ## release: Build all release binaries (Core + Agent)
@@ -160,6 +163,22 @@ clean:
 	rm -rf $(TARGET_DIR)/*.icns
 	rm -rf $(TARGET_DIR)/*.app
 	rm -f target/jki-macos-arm64.tar.gz
+
+## publish-site: Deploy static website to jki.4649.tw
+publish-site:
+	@echo "🚀 Deploying to jki.4649.tw..."
+	@rm -rf .site_dist
+	@mkdir .site_dist
+	@cp -r website/* .site_dist/
+	@cd .site_dist && \
+		git init && \
+		git remote add origin $(SITE_REPO) && \
+		git add . && \
+		git commit -m "Site update: $$(date)" && \
+		git push -f origin main
+	@rm -rf .site_dist
+	@echo "✨ Site successfully pushed to $(SITE_REPO)."
+
 
 ## help: Show this help message
 help:
