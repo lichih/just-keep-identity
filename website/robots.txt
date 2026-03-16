@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://jki.4649.tw/sitemap.xml

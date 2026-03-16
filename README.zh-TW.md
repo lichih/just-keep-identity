@@ -88,21 +88,21 @@ make install
 
 ---
 
-## 🛡 安全架構與心理模型 (Security Architecture)
+## 🛡 安全架構 (Security Architecture)
 
-JKI 採用**「關注點分離」**策略，在確保最高安全性的同時不犧牲可移植性：
+JKI 採用**「混合金庫 (Hybrid Vault)」**策略，在確保最高安全性的同時不犧牲可移植性：
 
-| 組件 | 儲存類型 | 內容 | 可移植性 |
+| 組件 | 儲存方式 (本地) | 儲存方式 (同步) | 安全性 |
 | :--- | :--- | :--- | :--- |
-| **身份元數據 (Metadata)** | Git / 本地檔案 | 帳號名稱、發行者、索引資訊 | **高** (透過 Git 同步) |
-| **OTP 秘密 (Secrets)** | OS Keyring | 實際的 TOTP Secret Keys | **零** (鎖定在硬體設備) |
+| **身份元數據 (Metadata)** | 本地檔案 | Git / 儲存庫 | 在儲存庫中公開可見 |
+| **OTP 秘密 (Secrets)** | **OS Keyring** | **加密後的 Git** | AES-256 (需要 Master Key) |
 
 ### 為什麼這樣設計？
-- **零磁碟殘留**：你的實際金鑰永遠不會以明文形式寫入磁碟。它們被儲存在作業系統原生的保險箱中（如 macOS Keychain）。
-- **Git 即是雲端**：為什麼要將密鑰交給第三方 SaaS？利用您現有的 Git 基礎設施（GitHub 或私有伺服器）同步帳號結構，同時將秘密鎖定在硬體設備中。
-- **安全的同步**：即便您的 Git 儲存庫外洩，攻擊者也只能看到你有「哪些」帳號，而拿不到「進入」這些帳號的金鑰。
-- **排除策略 (Exclusion Policy)**：JKI 預設的 `.gitignore` 會自動排除明文檔案 (`vault.json`, `master.key`, `*.txt`)。
-- **自動加固同步 (Auto-Hardening Sync)**：當執行 `jkim git sync` 時，系統會主動偵測明文金鑰。若目前有可用的 Master Key（透過 Agent 或 Keychain），JKI 會**自動執行加密並替換明文檔案**，確保您的秘密在同步過程中始終受到 `age` 加密保護。
+- **零磁碟殘留**：你的實際金鑰永遠不會以明文形式寫入磁碟。它們被儲存在作業系統原生的保險箱中（如 macOS Keychain / Linux Secret Service）。
+- **自動加固同步 (Auto-Hardening Sync)**：當執行 `jkim git sync` 時，系統會主動偵測明文金鑰。若目前有可用的 Master Key，JKI 會**自動執行加密**並準備同步，確保您的秘密在傳輸過程中始終受到保護。
+- **Git 即是雲端**：為什麼要將密鑰交給第三方 SaaS？利用您現有的 Git 基礎設施（GitHub 或私有伺服器）同步帳號結構，同時將秘密保持在加密狀態。
+- **安全的同步**：即便您的 Git 儲存庫外洩，攻擊者也只能看到你有「哪些」帳號。實際的金鑰在沒有 Master Key 的情況下只是無用的加密資料。
+
 
 ## 🔄 同步與災難恢復 (Sync & Disaster Recovery)
 

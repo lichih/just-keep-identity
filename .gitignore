@@ -35,7 +35,6 @@ __pycache__/
 # JKI
 master.key
 vault.json
-*.txt
 *.bin
 
 # Homebrew standalone test directory
