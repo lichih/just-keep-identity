@@ -18,8 +18,9 @@
 - **核心內容**：
     - `brew install` 指令框。
     - `demo.gif` 視覺展示。
-    - **"The Backstory"**：誠實的開發初衷。
+    - **"The Backstory"**：誠實的開發初衷 (WinAuth 傳承)。
 - **SEO**：
+    - 主標題：`Getting auth codes should never require a mouse.`
     - JSON-LD (`SoftwareApplication`).
     - Meta Tags (`2FA`, `MFA`, `Rust`, `macOS Keychain`).
 

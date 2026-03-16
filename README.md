@@ -1,5 +1,5 @@
 # Just Keep Identity (jki)
-> **Low-friction MFA & Identity Session Manager for CLI Power Users.**
+// Getting auth codes should never require a mouse.
 
 ![JKI Demo](docs/assets/demo.gif)
 

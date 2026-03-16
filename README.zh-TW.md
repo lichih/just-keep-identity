@@ -1,5 +1,5 @@
 # Just Keep Identity (jki)
-> **Extreme speed MFA & Identity Session Manager for CLI Power Users.**
+// 取得驗證碼，絕不該需要滑鼠。
 
 ![JKI Demo](docs/assets/demo.gif)
 
