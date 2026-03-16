@@ -36,7 +36,7 @@
 ## ✅ 驗證清單 (Checklist)
 - [x] `website/index.html` 內容完成。
 - [x] `Makefile` 指令測試通過 (已成功部署至 Private Repo)。
-- [ ] Cloudflare Pages 成功對接新 Repo。
-- [ ] `jki.4649.tw` 域名解析完成並開啟 Web Analytics。
+- [x] Cloudflare Pages 成功對接新 Repo。
+- [x] `jki.4649.tw` 域名解析完成並開啟 Web Analytics。
 
-**狀態：執行中 (In Progress)**
+**狀態：已完成 (Completed)**
